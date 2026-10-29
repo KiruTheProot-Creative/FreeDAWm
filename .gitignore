@@ -1,0 +1,20 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+out/
+Release/
+Debug/
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
+
+# Generated audio / screenshots from dev tooling
+*.wav
+!tests/data/*.wav
+/artifacts/
