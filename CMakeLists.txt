@@ -26,7 +26,7 @@ if(FDM_BUILD_TESTS)
     add_subdirectory(tools)
 endif()
 
-if(FDM_BUILD_APP AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/app/CMakeLists.txt)
+if(FDM_BUILD_APP)
     if(FDM_JUCE_PATH)
         add_subdirectory(${FDM_JUCE_PATH} ${CMAKE_BINARY_DIR}/juce EXCLUDE_FROM_ALL)
     else()
