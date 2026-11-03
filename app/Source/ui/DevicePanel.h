@@ -138,7 +138,7 @@ public:
             devices::paintCard(g, getLocalBounds(), juce::String(effect_->name()), theme::accent);
             g.setColour(theme::textDim);
             g.setFont(juce::Font(juce::FontOptions(11.0f)));
-            g.drawFittedText("VST3 effect\nLatency " + juce::String(effect_->latencySamples()) + " samples",
+            g.drawFittedText(juce::String(effect_->plugin().getPluginDescription().pluginFormatName) + " effect\nLatency " + juce::String(effect_->latencySamples()) + " samples",
                              getLocalBounds().reduced(14, 0).withTrimmedTop(40).withTrimmedBottom(40), juce::Justification::topLeft, 3);
         } else {
             auto r = getLocalBounds().toFloat().reduced(3.0f);

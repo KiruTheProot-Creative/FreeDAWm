@@ -34,7 +34,7 @@ private:
     std::function<void()> onClose_;
 };
 
-/** Finds VST3 plugins and creates effects from them.
+/** Finds VST3 and VST2 plugins and creates effects from them.
 
     By default only the `plugins` folder shipped next to the application is
     scanned, so the effects bundled with FreeDAWm are always found. Extra folders
@@ -50,9 +50,12 @@ public:
     /** The folders that hold effects shipped with FreeDAWm (the ones that exist). */
     juce::Array<juce::File> bundledFolders() const;
     juce::File              primaryBundledFolder() const;
-    juce::FileSearchPath    searchPaths() const;
+    juce::FileSearchPath    searchPaths(const juce::String& formatName = "VST3") const;
 
     bool useSystemFolders() const { return useSystemFolders_; }
+    /** VST2 support (FreeDAWm's own clean-room host). On by default. */
+    bool vst2Enabled() const { return vst2Enabled_; }
+    void setVst2Enabled(bool on) { vst2Enabled_ = on; saveSettings(); }
     void setUseSystemFolders(bool on) { useSystemFolders_ = on; saveSettings(); }
     void addFolder(const juce::File& folder);
     void removeFolder(const juce::String& path) { extraFolders_.removeString(path); saveSettings(); }
@@ -77,5 +80,6 @@ private:
     juce::PropertiesFile* settings_ = nullptr;
     juce::StringArray     extraFolders_;
     bool                  useSystemFolders_ = false;
+    bool                  vst2Enabled_ = true;
     std::unique_ptr<ScanJob> scanJob_;
 };

@@ -9,7 +9,8 @@ juce_add_gui_app(FreeDAWm
 target_sources(FreeDAWm PRIVATE
     Source/Main.cpp
     Source/AppState.cpp
-    Source/PluginHost.cpp)
+    Source/PluginHost.cpp
+    Source/vst2/Vst2Format.cpp)
 
 target_compile_definitions(FreeDAWm PRIVATE
     JUCE_WEB_BROWSER=0
@@ -41,3 +42,28 @@ target_link_libraries(FreeDAWm
 add_custom_command(TARGET FreeDAWm POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${PROJECT_SOURCE_DIR}/plugins $<TARGET_FILE_DIR:FreeDAWm>/plugins)
+
+# ---- clean-room VST2 host test: a tiny VST2 plugin + a console app that loads it ----
+if(FDM_BUILD_TESTS)
+    foreach(variant plain shell)
+        add_library(fdm_test_vst2_${variant} MODULE tests/TestVst2Plugin.cpp)
+        set_target_properties(fdm_test_vst2_${variant} PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden)
+        target_compile_features(fdm_test_vst2_${variant} PRIVATE cxx_std_17)
+        if(APPLE)   # on macOS a VST2 plugin is a .vst bundle
+            set_target_properties(fdm_test_vst2_${variant} PROPERTIES BUNDLE TRUE BUNDLE_EXTENSION vst)
+        endif()
+    endforeach()
+    target_compile_definitions(fdm_test_vst2_shell PRIVATE FDM_TEST_SHELL=1)
+
+    juce_add_console_app(fdm_vst2_host_test PRODUCT_NAME "fdm_vst2_host_test")
+    target_sources(fdm_vst2_host_test PRIVATE tests/Vst2HostTest.cpp Source/vst2/Vst2Format.cpp)
+    target_compile_definitions(fdm_vst2_host_test PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=0)
+    target_link_libraries(fdm_vst2_host_test PRIVATE juce::juce_audio_processors juce::juce_gui_basics
+                          PUBLIC juce::juce_recommended_config_flags)
+    add_dependencies(fdm_vst2_host_test fdm_test_vst2_plain fdm_test_vst2_shell)
+    if(APPLE)
+        add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_BUNDLE_DIR:fdm_test_vst2_plain> $<TARGET_BUNDLE_DIR:fdm_test_vst2_shell>)
+    else()
+        add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_FILE:fdm_test_vst2_plain> $<TARGET_FILE:fdm_test_vst2_shell>)
+    endif()
+endif()

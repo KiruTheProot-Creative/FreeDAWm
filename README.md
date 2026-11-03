@@ -19,7 +19,7 @@ A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-ma
   - *VST*: lists effects found in the `plugins/` folder (and any folders you add). Double-click one to add it to the selected track.
   - *Samples*: browses your sample folders. Click to preview, drag onto the timeline.
 - **Instruments**: a temporary Drum Rack and Poly Synth so MIDI tracks make sound for now. They will be replaced by hosted instrument plugins.
-- **Plugins**: VST3 hosting only. No effects or instruments are built in. VST2 is not supported.
+- **Plugins**: VST3, and VST2 through FreeDAWm's own clean-room host (see below). No effects or instruments are built in.
 - **Projects** (`.fdm`; sound files are referenced by path) and **WAV export** of the whole timeline (16/24/32-bit).
 - **Preferences** (toolbar button or Ctrl+,): ten tabs.
   - General, Audio, MIDI, Plugins, Library, Recording, Export, Editing, Appearance, Shortcuts.
@@ -31,6 +31,15 @@ Known limits:
 - A MIDI track holds 8 different clips. Copies of a clip share its notes; use "Make clip unique" to split them.
 - Audio clips don't follow tempo changes.
 - Clips can only be moved within their own track.
+
+## VST2 support
+FreeDAWm hosts VST 2.x plugins without Steinberg's VST2 SDK. `app/Source/vst2/Vst2Abi.h` is FreeDAWm's own description of the binary interface: the struct layout, function signatures and opcode numbers. It was written from scratch for interoperability, with its own names. `Vst2Format` plugs it into JUCE's plugin scanner.
+- Supported: effects and instruments, parameters, programs, state chunks, MIDI in, transport info, editors (Windows, macOS, Linux X11), and shell plugins (several plugins in one file).
+- Not supported: 32-bit plugins (a 64-bit host can't load them), double-precision processing, and plugins sending MIDI out.
+- `app/tests/` holds a small VST2 plugin and a host test that loads it.
+- VST2 can be switched off in Preferences > Plugins.
+
+VST is a trademark of Steinberg Media Technologies GmbH. FreeDAWm isn't affiliated with or endorsed by Steinberg.
 
 ## Build
 ```

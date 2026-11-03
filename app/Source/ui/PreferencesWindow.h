@@ -601,7 +601,7 @@ private:
                 for (auto& f : app_.pluginHost->bundledFolders()) bundled.add(f.getFullPathName());
                 if (bundled.isEmpty()) bundled.add(app_.pluginHost->primaryBundledFolder().getFullPathName());
                 auto& host = *app_.pluginHost;
-                p.custom("VST3 folders", std::make_unique<prefsui::FolderList>(bundled, [&host] { return host.extraFolders(); },
+                p.custom("Plugin folders", std::make_unique<prefsui::FolderList>(bundled, [&host] { return host.extraFolders(); },
                                                                                [&host](const juce::File& f) { host.addFolder(f); },
                                                                                [&host](const juce::String& s) { host.removeFolder(s); }), 190);
                 p.toggleFn("Also scan system VST3 folders", [&host] { return host.useSystemFolders(); }, [&host](bool v) { host.setUseSystemFolders(v); },
@@ -615,7 +615,8 @@ private:
                 p.toggle("Open editor on add", "openEditorOnLoad", "Shows the plugin window as soon as an effect is loaded.");
                 p.section("Formats");
                 p.toggleFn("VST3", [] { return true; }, [](bool) {}, "Always on.");
-                p.toggleFn("VST2", [] { return false; }, [](bool) {}, "Steinberg no longer licenses the VST2 SDK.", true);
+                p.toggleFn("VST2", [&host] { return host.vst2Enabled(); }, [this, &host](bool v) { host.setVst2Enabled(v); app_.structureHasChanged(); },
+                           "FreeDAWm's own VST2 host (no Steinberg SDK). 64-bit plugins only. Rescan after turning it on.");
                 break;
             }
             case 4: {   // Library

@@ -1,5 +1,7 @@
 #include "PluginHost.h"
 
+#include "vst2/Vst2Format.h"
+
 // ===========================================================================
 // Vst3Effect
 // ===========================================================================
@@ -70,9 +72,10 @@ public:
     void run() override {
         for (int i = 0; i < host_.formatManager.getNumFormats() && !threadShouldExit(); ++i) {
             auto* format = host_.formatManager.getFormat(i);
-            if (format->getName() != "VST3") continue;
+            const bool wanted = format->getName() == "VST3" || (format->getName() == Vst2Format::formatName() && host_.vst2Enabled());
+            if (!wanted) continue;
 
-            juce::PluginDirectoryScanner scanner(host_.knownPlugins, *format, host_.searchPaths(), true,
+            juce::PluginDirectoryScanner scanner(host_.knownPlugins, *format, host_.searchPaths(format->getName()), true,
                                                  host_.deadMansPedalFile());
             juce::String name;
             while (!threadShouldExit() && scanner.scanNextFile(true, name)) {
@@ -100,12 +103,14 @@ private:
 
 PluginHost::PluginHost(juce::PropertiesFile* settings) : settings_(settings) {
     juce::addDefaultFormatsToManager(formatManager);
+    formatManager.addFormat(std::make_unique<Vst2Format>());       // clean-room VST2 host
 
     if (settings_ != nullptr) {
         if (auto xml = settings_->getXmlValue("knownPlugins")) knownPlugins.recreateFromXml(*xml);
         extraFolders_.addTokens(settings_->getValue("pluginFolders"), "|", "");
         extraFolders_.removeEmptyStrings();
         useSystemFolders_ = settings_->getBoolValue("scanSystemVst3", false);
+        vst2Enabled_ = settings_->getBoolValue("vst2Enabled", true);
     }
 }
 
@@ -119,6 +124,7 @@ void PluginHost::saveSettings() {
     if (auto xml = knownPlugins.createXml()) settings_->setValue("knownPlugins", xml.get());
     settings_->setValue("pluginFolders", extraFolders_.joinIntoString("|"));
     settings_->setValue("scanSystemVst3", useSystemFolders_);
+    settings_->setValue("vst2Enabled", vst2Enabled_);
     settings_->saveIfNeeded();
 }
 
@@ -136,14 +142,14 @@ juce::Array<juce::File> PluginHost::bundledFolders() const {
     return result;
 }
 
-juce::FileSearchPath PluginHost::searchPaths() const {
+juce::FileSearchPath PluginHost::searchPaths(const juce::String& formatName) const {
     juce::FileSearchPath paths;
     for (auto& f : bundledFolders()) paths.add(f);
     for (auto& f : extraFolders_) paths.add(juce::File(f));
     if (useSystemFolders_) {
         for (int i = 0; i < formatManager.getNumFormats(); ++i) {
             auto* format = formatManager.getFormat(i);
-            if (format->getName() == "VST3") paths.addPath(format->getDefaultLocationsToSearch());
+            if (format->getName() == formatName) paths.addPath(format->getDefaultLocationsToSearch());
         }
     }
     return paths;
@@ -170,7 +176,7 @@ void PluginHost::scanAsync(std::function<void(int)> onDone) {
 juce::Array<juce::PluginDescription> PluginHost::availableEffects() const {
     juce::Array<juce::PluginDescription> effects;
     for (auto& d : knownPlugins.getTypes())
-        if (!d.isInstrument && d.pluginFormatName == "VST3") effects.add(d);
+        if (!d.isInstrument && (d.pluginFormatName == "VST3" || (vst2Enabled_ && d.pluginFormatName == Vst2Format::formatName()))) effects.add(d);
 
     struct ByName {
         static int compareElements(const juce::PluginDescription& a, const juce::PluginDescription& b) {

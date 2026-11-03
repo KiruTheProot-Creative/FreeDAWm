@@ -133,7 +133,7 @@ private:
             for (auto& f : bundled)
                 if (juce::File(d.fileOrIdentifier).isAChildOf(f)) isBundled = true;
             Row r;
-            r.title = d.name;
+            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + "]");
             r.desc = d;
             (isBundled ? official : other).push_back(r);
         }
@@ -143,11 +143,11 @@ private:
             for (auto& i : items) rows_.push_back(i);
         };
         addSection("Bundled effects", official);
-        addSection("Installed VST3", other);
+        addSection("Installed plugins", other);
         list_.updateContent();
         list_.repaint();
 
-        status_.setText(all.isEmpty() ? "NO VST3 EFFECTS FOUND YET. PUT .VST3 FILES IN THE PLUGINS FOLDER, THEN PRESS SCAN."
+        status_.setText(all.isEmpty() ? "NO EFFECTS FOUND YET. PUT VST3 OR VST2 PLUGINS IN THE PLUGINS FOLDER, THEN PRESS SCAN."
                                       : "DOUBLE-CLICK A PLUGIN TO ADD IT TO THE SELECTED TRACK",
                         juce::dontSendNotification);
     }

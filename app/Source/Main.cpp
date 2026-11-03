@@ -44,7 +44,8 @@ public:
             if (prefsTab >= 0 && prefsTab + 1 < args.size())
                 if (auto* c = dynamic_cast<MainComponent*>(window_->getContentComponent())) c->showPreferences(args[prefsTab + 1].getIntValue());
             if (sel >= 0 && sel + 1 < args.size()) state_->selectChannel(args[sel + 1].getIntValue(), 0);
-            juce::Timer::callAfterDelay(1200, [this, out, scene, args] {
+            if (args.contains("--scan")) state_->pluginHost->scanAsync([this](int) { state_->structureHasChanged(); });
+            juce::Timer::callAfterDelay(args.contains("--scan") ? 4000 : 1200, [this, out, scene, args] {
                 if (scene >= 0 && scene + 1 < args.size())
                     if (auto* c = dynamic_cast<MainComponent*>(window_->getContentComponent())) c->showTab(args[scene + 1].getIntValue());
                 juce::Timer::callAfterDelay(400, [this, out] {
@@ -67,7 +68,7 @@ public:
             if (state_->prefs->getBool("scanOnStartup")) { host.scanAsync([this](int) { state_->structureHasChanged(); }); return; }
             if (host.availableEffects().isEmpty())
                 for (auto& folder : host.bundledFolders())
-                    if (!folder.findChildFiles(juce::File::findFilesAndDirectories, false, "*.vst3").isEmpty()) {
+                    if (!folder.findChildFiles(juce::File::findFilesAndDirectories, false, "*.vst3;*.vst;*.dll;*.so").isEmpty()) {
                         host.scanAsync([this](int) { state_->structureHasChanged(); });
                         break;
                     }
