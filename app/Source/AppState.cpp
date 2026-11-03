@@ -15,6 +15,9 @@ AppState::AppState() {
 
     pluginHost = std::make_unique<PluginHost>(properties.getUserSettings());
     monoScratch_.assign(fdm::kMaxBlockSize, 0.0f);
+    formats_.registerBasicFormats();
+    previewBuffer_.setSize(2, fdm::kMaxBlockSize);
+    previewThread_.startThread();
 
     // Audio: restore the last device setup if there was one.
     std::unique_ptr<juce::XmlElement> saved;
@@ -29,6 +32,7 @@ AppState::AppState() {
     }
 
     fdm::buildDemoProject(engine);
+    engine.arrangementMode.store(true);
     selection_ = {Selection::Kind::Channel, 0, 0};
     armedChannel_.store(0);
 }
@@ -38,6 +42,8 @@ AppState::~AppState() {
     for (auto& device : juce::MidiInput::getAvailableDevices())
         deviceManager.removeMidiInputDeviceCallback(device.identifier, this);
     detachAudio();
+    previewTransport_.setSource(nullptr);
+    previewThread_.stopThread(2000);
     editors.clear();
     clearAllEffects();
 }
@@ -229,10 +235,14 @@ void AppState::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessa
 void AppState::audioDeviceAboutToStart(juce::AudioIODevice* device) {
     blockSize_ = juce::jmax(64, device->getCurrentBufferSizeSamples());
     engine.prepare(device->getCurrentSampleRate(), blockSize_);
+    previewTransport_.prepareToPlay(blockSize_, device->getCurrentSampleRate());
     engine.setAudioThreadRunning(true);
 }
 
-void AppState::audioDeviceStopped() { engine.setAudioThreadRunning(false); }
+void AppState::audioDeviceStopped() {
+    engine.setAudioThreadRunning(false);
+    previewTransport_.releaseResources();
+}
 
 void AppState::audioDeviceIOCallbackWithContext(const float* const*, int, float* const* output, int numOutputs,
                                                 int numSamples, const juce::AudioIODeviceCallbackContext&) {
@@ -240,6 +250,13 @@ void AppState::audioDeviceIOCallbackWithContext(const float* const*, int, float*
 
     if (numOutputs >= 2) {
         engine.process(output[0], output[1], numSamples);
+        if (previewTransport_.isPlaying() && numSamples <= previewBuffer_.getNumSamples()) {
+            previewBuffer_.clear();
+            juce::AudioSourceChannelInfo info(&previewBuffer_, 0, numSamples);
+            previewTransport_.getNextAudioBlock(info);
+            juce::FloatVectorOperations::add(output[0], previewBuffer_.getReadPointer(0), numSamples);
+            juce::FloatVectorOperations::add(output[1], previewBuffer_.getReadPointer(1), numSamples);
+        }
         for (int c = 2; c < numOutputs; ++c)
             if (output[c] != nullptr) juce::FloatVectorOperations::clear(output[c], numSamples);
     } else if (numOutputs == 1) {
@@ -251,6 +268,50 @@ void AppState::audioDeviceIOCallbackWithContext(const float* const*, int, float*
         }
     }
 }
+
+// ===========================================================================
+// Samples
+// ===========================================================================
+
+juce::StringArray AppState::sampleFolders() {
+    juce::StringArray folders;
+    if (auto* settings = properties.getUserSettings()) folders.addTokens(settings->getValue("sampleFolders"), "|", "");
+    folders.removeEmptyStrings();
+    if (folders.isEmpty()) {
+        auto def = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("FreeDAWm").getChildFile("Samples");
+        def.createDirectory();
+        folders.add(def.getFullPathName());
+    }
+    return folders;
+}
+
+void AppState::addSampleFolder(const juce::File& folder) {
+    auto folders = sampleFolders();
+    folders.addIfNotAlreadyThere(folder.getFullPathName());
+    if (auto* settings = properties.getUserSettings()) { settings->setValue("sampleFolders", folders.joinIntoString("|")); settings->saveIfNeeded(); }
+}
+
+void AppState::removeSampleFolder(const juce::String& path) {
+    auto folders = sampleFolders();
+    folders.removeString(path);
+    if (auto* settings = properties.getUserSettings()) { settings->setValue("sampleFolders", folders.joinIntoString("|")); settings->saveIfNeeded(); }
+}
+
+void AppState::previewSample(const juce::File& file) {
+    previewTransport_.stop();
+    previewTransport_.setSource(nullptr);
+    previewSource_.reset();
+    if (!file.existsAsFile()) return;
+    std::unique_ptr<juce::AudioFormatReader> reader(formats_.createReaderFor(file));
+    if (reader == nullptr) return;
+    const double rate = reader->sampleRate;
+    previewSource_ = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
+    previewTransport_.setSource(previewSource_.get(), 32768, &previewThread_, rate);
+    previewTransport_.setPosition(0.0);
+    previewTransport_.start();
+}
+
+void AppState::stopSamplePreview() { previewTransport_.stop(); }
 
 // ===========================================================================
 // Projects
@@ -265,6 +326,11 @@ void AppState::resetMixerAndTransport() {
     engine.bpm.set(120.0f);
     engine.swing.set(0.0f);
     engine.launchQuantizeTicks.store(fdm::kTicksPerBar);
+    engine.arrangementMode.store(true);
+    engine.loopEnabled.store(false);
+    engine.loopStartTick.store(0);
+    engine.loopEndTick.store(fdm::kTicksPerBar * 4);
+    engine.setPlayhead(0);
     for (int r = 0; r < fdm::kNumReturns; ++r) {
         auto& s = engine.returnStrip(r);
         s.volumeDb.store(0.0f);
@@ -346,6 +412,10 @@ juce::Result AppState::saveProject(const juce::File& file) {
     root->setProperty("bpm", engine.bpm.get());
     root->setProperty("swing", engine.swing.get());
     root->setProperty("launchQuantizeTicks", engine.launchQuantizeTicks.load());
+    root->setProperty("arrangement", engine.arrangementMode.load());
+    root->setProperty("loopEnabled", engine.loopEnabled.load());
+    root->setProperty("loopStart", engine.loopStartTick.load());
+    root->setProperty("loopEnd", engine.loopEndTick.load());
 
     juce::Array<var> channels;
     for (int i = 0; i < fdm::kMaxChannels; ++i) {
@@ -382,6 +452,16 @@ juce::Result AppState::saveProject(const juce::File& file) {
             clips.add(var(c));
         }
         obj->setProperty("clips", clips);
+
+        juce::Array<var> placements;
+        for (int pi = 0; pi < fdm::kMaxPlacements; ++pi) {
+            fdm::Placement pl;
+            if (!ch.getPlacement(pi, pl)) continue;
+            juce::Array<var> entry;
+            entry.add(pl.startTick); entry.add(pl.lengthTicks); entry.add(pl.slot);
+            placements.add(var(entry));
+        }
+        obj->setProperty("placements", placements);
         channels.add(var(obj));
     }
     root->setProperty("channels", channels);
@@ -436,6 +516,10 @@ juce::Result AppState::loadProject(const juce::File& file) {
         engine.bpm.set(static_cast<float>(static_cast<double>(root["bpm"])));
         engine.swing.set(static_cast<float>(static_cast<double>(root["swing"])));
         engine.launchQuantizeTicks.store(static_cast<int>(root["launchQuantizeTicks"]));
+        engine.arrangementMode.store(root.hasProperty("arrangement") ? static_cast<bool>(root["arrangement"]) : false);
+        engine.loopStartTick.store(root.hasProperty("loopStart") ? static_cast<int>(root["loopStart"]) : 0);
+        engine.loopEndTick.store(root.hasProperty("loopEnd") ? static_cast<int>(root["loopEnd"]) : fdm::kTicksPerBar * 4);
+        engine.loopEnabled.store(static_cast<bool>(root["loopEnabled"]));
 
         if (auto* channels = root["channels"].getArray()) {
             for (auto& cv : *channels) {
@@ -450,6 +534,10 @@ juce::Result AppState::loadProject(const juce::File& file) {
                     for (int s = 0; s < fdm::kNumReturns && s < sends->size(); ++s)
                         ch.sends[static_cast<size_t>(s)].store(static_cast<float>(static_cast<double>((*sends)[s])));
                 varToParams(cv["params"], drums ? ch.drums.params() : ch.synth.params());
+                if (auto* placements = cv["placements"].getArray())
+                    for (auto& pv : *placements)
+                        if (auto* a = pv.getArray(); a != nullptr && a->size() >= 3)
+                            ch.addPlacement({static_cast<int>((*a)[0]), static_cast<int>((*a)[1]), static_cast<int>((*a)[2])});
 
                 if (auto* clips = cv["clips"].getArray()) {
                     for (auto& clipVar : *clips) {

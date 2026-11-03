@@ -16,6 +16,16 @@ namespace fdm {
 
 enum class InstrumentType : int { DrumRack = 0, PolySynth = 1 };
 
+constexpr int kMaxPlacements = 128;   // arrangement clips per channel
+constexpr int kPlacementUnit = kTicksPerStep;   // placements start and end on 16th-note boundaries
+
+/** A clip slot placed on the arrangement timeline. */
+struct Placement {
+    int startTick  = 0;
+    int lengthTicks = kTicksPerBar;
+    int slot       = 0;      // which clip slot's notes it plays
+};
+
 constexpr int kNoQueue   = -1;   // Channel::queuedSlot: nothing queued
 constexpr int kQueueStop = -2;   // Channel::queuedSlot: stop the playing clip at the next launch point
 
@@ -59,6 +69,48 @@ struct Channel : Strip {
     Channel() {
         for (auto& s : sends) s.store(0.0f, std::memory_order_relaxed);
         for (auto& p : pending) p = {};
+        for (auto& w : placements) w.store(0, std::memory_order_relaxed);
+    }
+
+    // ---- arrangement placements (UI thread writes; one packed atomic word each) ----
+    //   bit 63 active | bits 40-42 slot | bits 20-39 length (units) | bits 0-19 start (units)
+    std::array<std::atomic<uint64_t>, kMaxPlacements> placements;
+
+    static uint64_t packPlacement(const Placement& p) {
+        const uint64_t start = static_cast<uint64_t>(std::max(0, p.startTick) / kPlacementUnit) & 0xFFFFF;
+        const uint64_t len   = static_cast<uint64_t>(std::max(kPlacementUnit, p.lengthTicks) / kPlacementUnit) & 0xFFFFF;
+        const uint64_t slot  = static_cast<uint64_t>(std::clamp(p.slot, 0, kMaxScenes - 1)) & 0x7;
+        return (1ull << 63) | (slot << 40) | (len << 20) | start;
+    }
+    static Placement unpackPlacement(uint64_t w) {
+        Placement p;
+        p.startTick   = static_cast<int>(w & 0xFFFFF) * kPlacementUnit;
+        p.lengthTicks = static_cast<int>((w >> 20) & 0xFFFFF) * kPlacementUnit;
+        p.slot        = static_cast<int>((w >> 40) & 0x7);
+        return p;
+    }
+    int addPlacement(const Placement& p) {
+        for (int i = 0; i < kMaxPlacements; ++i)
+            if ((placements[static_cast<size_t>(i)].load() >> 63) == 0) {
+                placements[static_cast<size_t>(i)].store(packPlacement(p), std::memory_order_release);
+                return i;
+            }
+        return -1;
+    }
+    bool getPlacement(int i, Placement& out) const {
+        if (i < 0 || i >= kMaxPlacements) return false;
+        const uint64_t w = placements[static_cast<size_t>(i)].load(std::memory_order_acquire);
+        if ((w >> 63) == 0) return false;
+        out = unpackPlacement(w);
+        return true;
+    }
+    void setPlacement(int i, const Placement& p) { placements[static_cast<size_t>(i)].store(packPlacement(p), std::memory_order_release); }
+    void removePlacement(int i) { placements[static_cast<size_t>(i)].store(0, std::memory_order_release); }
+    void clearPlacements() { for (auto& w : placements) w.store(0, std::memory_order_release); }
+    int  countPlacements() const {
+        int n = 0;
+        for (auto& w : placements) n += (w.load() >> 63) ? 1 : 0;
+        return n;
     }
 
     std::atomic<bool> active{false};
@@ -94,6 +146,7 @@ struct Channel : Strip {
     struct PendingOff { int note = 0; int64_t offTick = 0; };
     std::array<PendingOff, 64> pending;
     int     numPending   = 0;
+    int     arrIndex     = -1;       // audio thread: placement currently playing (arrangement mode)
     int64_t clipStartTick = 0;
 
     void addPending(int note, int64_t offTick, IInstrument& inst) {

@@ -11,5 +11,8 @@
 - Structural changes (add/remove channel, load project) detach the audio callback first.
 - `IEffect` is the plugin boundary; `Channel::external` can replace a built-in instrument (future VST instruments).
 
+## Arrangement
+Each channel holds up to 128 *placements* (start, length, clip slot), each packed into one atomic word like notes are. With `Engine::arrangementMode` on, the audio thread looks up the placement under the playhead every tick and plays that slot's clip, looping it inside the placement. The engine also owns the loop region and a seek request, so the UI can move the playhead while playing. `renderOffline(Engine::kRenderArrangement, ...)` bounces the whole timeline.
+
 ## Roadmap
-Arrangement view, plugin delay compensation, sampler, automation, MIDI export, effects (designed separately).
+Hosted VST3 instruments, sampler (drag samples onto the timeline), plugin delay compensation, automation lanes, audio clips, MIDI export, effects (designed separately).

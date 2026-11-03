@@ -62,6 +62,14 @@ public:
     juce::String projectName() const;
     const juce::File& projectFile() const { return projectFile_; }
 
+    // ---- sample explorer ------------------------------------------------------------
+    juce::StringArray sampleFolders();
+    void addSampleFolder(const juce::File& folder);
+    void removeSampleFolder(const juce::String& path);
+    void previewSample(const juce::File& file);      // plays through the master output, outside the mixer
+    void stopSamplePreview();
+    bool isPreviewingSample() const { return previewTransport_.isPlaying(); }
+
     // ---- audio --------------------------------------------------------------
     double cpuUsage() const { return deviceManager.getCpuUsage(); }
     juce::String audioStatus() const { return audioError_; }
@@ -113,4 +121,10 @@ private:
     bool audioAttached_ = false;
     int  blockSize_ = 512;
     std::vector<float> monoScratch_;
+
+    juce::AudioFormatManager     formats_;
+    juce::TimeSliceThread        previewThread_{"Sample preview"};
+    juce::AudioTransportSource   previewTransport_;
+    std::unique_ptr<juce::AudioFormatReaderSource> previewSource_;
+    juce::AudioBuffer<float>     previewBuffer_;
 };

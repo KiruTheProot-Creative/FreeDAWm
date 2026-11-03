@@ -86,6 +86,7 @@ int Engine::addChannel(InstrumentType type) {
         if (c.active.load()) continue;
 
         for (auto& clip : c.clips) clip.clear();
+        c.clearPlacements();
         c.playingSlot.store(-1);
         c.queuedSlot.store(kNoQueue);
         c.numPending = 0;
@@ -111,6 +112,7 @@ void Engine::removeChannel(int index) {
     c.queuedSlot.store(kNoQueue);
     c.playingSlot.store(-1);
     for (auto& clip : c.clips) clip.clear();
+    c.clearPlacements();
 }
 
 void Engine::launchClip(int channel, int slot) {
@@ -201,7 +203,7 @@ void Engine::applyTransportCommand() {
     const int cmd = transportCmd_.exchange(0, std::memory_order_acq_rel);
     if (cmd == kCmdStart && !playing_) {
         playing_    = true;
-        globalTick_ = 0;
+        globalTick_ = playStartTick_.load(std::memory_order_relaxed);
         countdown_  = 0.0;
         playingFlag_.store(true, std::memory_order_relaxed);
     } else if (cmd == kCmdStop) {
@@ -223,7 +225,36 @@ void Engine::stopTransportInternal() {
     globalTick_ = 0;
     countdown_  = 0.0;
     playingFlag_.store(false, std::memory_order_relaxed);
-    positionTicks_.store(0, std::memory_order_relaxed);
+    positionTicks_.store(playStartTick_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+}
+
+void Engine::setPlayhead(int64_t ticks) {
+    ticks = std::max<int64_t>(0, ticks);
+    playStartTick_.store(ticks, std::memory_order_relaxed);
+    if (playingFlag_.load(std::memory_order_relaxed)) seekRequest_.store(ticks, std::memory_order_release);
+    else positionTicks_.store(ticks, std::memory_order_relaxed);
+}
+
+int64_t Engine::arrangementEndTick() {
+    int64_t end = 0;
+    for (auto& ch : channels_) {
+        if (!ch.active.load()) continue;
+        Placement p;
+        for (int i = 0; i < kMaxPlacements; ++i)
+            if (ch.getPlacement(i, p)) end = std::max<int64_t>(end, static_cast<int64_t>(p.startTick) + p.lengthTicks);
+    }
+    return (end + kTicksPerBar - 1) / kTicksPerBar * kTicksPerBar;
+}
+
+void Engine::releaseAllChannels() {
+    for (auto& ch : channels_) {
+        if (!ch.active.load(std::memory_order_relaxed)) continue;
+        IInstrument& inst = ch.instrument();
+        ch.releaseAll(inst);
+        inst.allNotesOff();
+        ch.arrIndex = -1;
+        ch.playingSlot.store(-1, std::memory_order_relaxed);
+    }
 }
 
 void Engine::drainLiveEvents() {
@@ -266,6 +297,7 @@ void Engine::triggerNotes(Channel& ch, Clip& clip, int local, int len, IInstrume
 void Engine::processTick() {
     const int  quant  = launchQuantizeTicks.load(std::memory_order_relaxed);
     const bool onGrid = quant <= 1 || (globalTick_ % quant) == 0;
+    const bool arrangement = arrangementMode.load(std::memory_order_relaxed);
 
     for (auto& ch : channels_) {
         if (!ch.active.load(std::memory_order_relaxed)) continue;
@@ -274,8 +306,34 @@ void Engine::processTick() {
         // 1. Note-offs that are due.
         ch.releaseDue(globalTick_, inst);
 
-        // 2. Launches queued from the UI, applied on the quantization grid.
-        const int queued = ch.queuedSlot.load(std::memory_order_acquire);
+        // 2a. Arrangement mode: the placement under the playhead decides what plays.
+        if (arrangement) {
+            int found = -1;
+            Placement best;
+            for (int i = 0; i < kMaxPlacements; ++i) {
+                Placement p;
+                if (!ch.getPlacement(i, p)) continue;
+                if (globalTick_ < p.startTick || globalTick_ >= static_cast<int64_t>(p.startTick) + p.lengthTicks) continue;
+                if (!ch.clips[static_cast<size_t>(p.slot)].exists.load(std::memory_order_acquire)) continue;
+                if (found < 0 || p.startTick >= best.startTick) { found = i; best = p; }     // latest start wins on overlap
+            }
+            const int  curSlot  = ch.playingSlot.load(std::memory_order_relaxed);
+            const bool changed  = found < 0 ? curSlot >= 0
+                                            : (curSlot != best.slot || ch.clipStartTick != best.startTick);
+            if (changed) {
+                ch.releaseAll(inst);
+                inst.allNotesOff();
+                if (found < 0) {
+                    ch.playingSlot.store(-1, std::memory_order_relaxed);
+                } else {
+                    ch.playingSlot.store(best.slot, std::memory_order_relaxed);
+                    ch.clipStartTick = best.startTick;
+                }
+            }
+        }
+
+        // 2b. Launches queued from the UI, applied on the quantization grid.
+        const int queued = arrangement ? kNoQueue : ch.queuedSlot.load(std::memory_order_acquire);
         if (queued != kNoQueue && onGrid) {
             ch.releaseAll(inst);
             ch.queuedSlot.store(kNoQueue, std::memory_order_relaxed);
@@ -412,8 +470,15 @@ void Engine::processChunk(float* outL, float* outR, int n) {
         int pos = 0;
         while (pos < n) {
             if (countdown_ <= 0.0) {
+                const int64_t seek = seekRequest_.exchange(-1, std::memory_order_acquire);
+                if (seek >= 0) { releaseAllChannels(); globalTick_ = seek; }
                 processTick();
                 ++globalTick_;
+                if (loopEnabled.load(std::memory_order_relaxed)) {
+                    const int64_t ls = loopStartTick.load(std::memory_order_relaxed);
+                    const int64_t le = loopEndTick.load(std::memory_order_relaxed);
+                    if (le > ls && globalTick_ >= le) { releaseAllChannels(); globalTick_ = ls; }
+                }
                 countdown_ += samplesPerTick();
             }
             const int seg = std::clamp(static_cast<int>(std::ceil(countdown_)), 1, n - pos);
@@ -444,7 +509,9 @@ void Engine::renderOffline(int scene, int bars, float tailSeconds,
         Channel& ch = channels_[static_cast<size_t>(i)];
         int s = -1;
         if (ch.active.load()) {
-            if (scene >= 0) {
+            if (scene == kRenderArrangement) {
+                s = -1;                                  // the arrangement decides
+            } else if (scene >= 0) {
                 s = (scene < kMaxScenes && ch.clips[static_cast<size_t>(scene)].exists.load()) ? scene : -1;
             } else {
                 const int q = ch.queuedSlot.load();
@@ -457,6 +524,7 @@ void Engine::renderOffline(int scene, int bars, float tailSeconds,
     // Start from a clean slate: no leftover voices, effect tails or limiter state.
     stopTransportInternal();
     transportCmd_.store(0);
+    seekRequest_.store(-1);
     liveRead_.store(liveWrite_.load());
     prepareInstruments();
     for (auto& ch : channels_)
@@ -472,6 +540,11 @@ void Engine::renderOffline(int scene, int bars, float tailSeconds,
     for (int i = 0; i < kMaxChannels; ++i)
         if (slots[static_cast<size_t>(i)] >= 0)
             channels_[static_cast<size_t>(i)].queuedSlot.store(slots[static_cast<size_t>(i)]);
+
+    const bool savedArrangement = arrangementMode.exchange(scene == kRenderArrangement);
+    const bool savedLoop = loopEnabled.exchange(false);
+    if (scene == kRenderArrangement && bars <= 0)
+        bars = static_cast<int>(std::max<int64_t>(1, arrangementEndTick() / kTicksPerBar));
 
     playing_ = true;
     globalTick_ = 0;
@@ -505,6 +578,8 @@ void Engine::renderOffline(int scene, int bars, float tailSeconds,
         done += n;
     }
 
+    arrangementMode.store(savedArrangement);
+    loopEnabled.store(savedLoop);
     stopTransportInternal();
 }
 

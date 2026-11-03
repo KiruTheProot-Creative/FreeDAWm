@@ -128,6 +128,15 @@ void buildDemoProject(Engine& engine) {
         for (auto& n : bar1) note(c, n[1], n[0], 1.5f, 92);
         for (auto& n : bar2) note(c, n[1], n[0], 1.5f, 92);
     }
+
+    // Lay the two scenes out on the timeline: bars 1-4 = scene 1, bars 5-8 = scene 2.
+    for (int i = 0; i < kMaxChannels; ++i) {
+        Channel& ch = engine.channel(i);
+        if (!ch.active.load()) continue;
+        for (int slot = 0; slot < 2; ++slot)
+            if (ch.clips[static_cast<size_t>(slot)].exists.load())
+                ch.addPlacement({slot * 4 * kTicksPerBar, 4 * kTicksPerBar, slot});
+    }
 }
 
 }  // namespace fdm

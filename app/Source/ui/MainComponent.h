@@ -1,25 +1,49 @@
 #pragma once
 
+#include "ArrangementView.h"
 #include "ClipEditor.h"
+#include "Explorer.h"
 #include "DevicePanel.h"
 #include "SessionView.h"
 #include "TransportBar.h"
 
+/** The session grid needs about 540 px; scroll when the bottom panel is shorter. */
+class SessionHolder : public juce::Component {
+public:
+    explicit SessionHolder(AppState& app) : session(app) {
+        viewport_.setViewedComponent(&session, false);
+        viewport_.setScrollBarsShown(true, false);
+        addAndMakeVisible(viewport_);
+    }
+    void resized() override {
+        viewport_.setBounds(getLocalBounds());
+        session.setSize(viewport_.getMaximumVisibleWidth(), std::max(540, viewport_.getMaximumVisibleHeight()));
+    }
+    SessionView session;
+private:
+    juce::Viewport viewport_;
+};
+
 class MainComponent : public juce::Component {
 public:
     explicit MainComponent(AppState& app)
-        : app_(app), transport_(app), session_(app), clipEditor_(app), devicePanel_(app) {
+        : app_(app), transport_(app), explorer_(app), arrangement_(app), sessionHolder_(app), clipEditor_(app), devicePanel_(app) {
         addAndMakeVisible(transport_);
-        addAndMakeVisible(session_);
+        addAndMakeVisible(explorer_);
+        addAndMakeVisible(arrangement_);
+        addAndMakeVisible(splitter_);
         addAndMakeVisible(tabs_);
-        tabs_.setTabBarDepth(28);
+        tabs_.setTabBarDepth(32);
         tabs_.setOutline(0);
-        tabs_.addTab("Clip", theme::panel, &clipEditor_, false);
-        tabs_.addTab("Device", theme::panel, &devicePanel_, false);
-        session_.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
+        tabs_.addTab("Piano Roll", theme::panel, &clipEditor_, false);
+        tabs_.addTab("FX Chain", theme::panel, &devicePanel_, false);
+        tabs_.addTab("Session", theme::panel, &sessionHolder_, false);
+        sessionHolder_.session.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
+        arrangement_.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
+        splitter_.onDrag = [this](int dy) { bottomHeight_ = juce::jlimit(220, std::max(240, getHeight() - 260), bottomHeight_ - dy); resized(); };
 
         setWantsKeyboardFocus(true);
-        setSize(1280, 800);
+        setSize(1500, 900);
     }
 
     void paint(juce::Graphics& g) override { g.fillAll(theme::background); }
@@ -27,8 +51,11 @@ public:
     void resized() override {
         auto r = getLocalBounds();
         transport_.setBounds(r.removeFromTop(theme::kTransportHeight));
-        tabs_.setBounds(r.removeFromBottom(juce::jlimit(300, 440, getHeight() / 3)));
-        session_.setBounds(r);
+        explorer_.setBounds(r.removeFromLeft(theme::kExplorerWidth));
+        bottomHeight_ = juce::jlimit(220, std::max(240, getHeight() - 260), bottomHeight_);
+        tabs_.setBounds(r.removeFromBottom(bottomHeight_));
+        splitter_.setBounds(r.removeFromBottom(6));
+        arrangement_.setBounds(r);
     }
 
     void showTab(int i) { tabs_.setCurrentTabIndex(i); }
@@ -61,8 +88,25 @@ public:
 
 private:
     AppState& app_;
+    struct Splitter : juce::Component {
+        std::function<void(int)> onDrag;
+        Splitter() { setMouseCursor(juce::MouseCursor::UpDownResizeCursor); }
+        void paint(juce::Graphics& g) override {
+            g.fillAll(theme::panel.darker(0.4f));
+            g.setColour(theme::accentDeep);
+            g.fillRect(getWidth() / 2 - 20, 2, 40, 2);
+        }
+        void mouseDrag(const juce::MouseEvent& e) override { if (onDrag) onDrag(e.getDistanceFromDragStartY() - lastDy_); lastDy_ = e.getDistanceFromDragStartY(); }
+        void mouseUp(const juce::MouseEvent&) override { lastDy_ = 0; }
+        int lastDy_ = 0;
+    };
+
     TransportBar transport_;
-    SessionView session_;
+    ExplorerPanel explorer_;
+    ArrangementView arrangement_;
+    Splitter splitter_;
+    int bottomHeight_ = 360;
+    SessionHolder sessionHolder_;
     ClipEditor clipEditor_;
     DevicePanel devicePanel_;
     juce::TabbedComponent tabs_{juce::TabbedButtonBar::TabsAtTop};

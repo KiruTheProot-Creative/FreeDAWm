@@ -3,13 +3,16 @@
 A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-making first.
 
 ## What works today
-- **Session view**: up to 12 channels x 8 clip slots, scene launch, quantized launching, 2 return channels, master.
-- **Instruments**: built-in Drum Rack (8 synthesized pads) and Poly Synth.
-- **Clip editor**: step grid for drums, piano roll for synths.
-- **Mixer**: volume, balance, mute/solo, 2 sends, meters, 4 FX slots per channel/return/master.
-- **VST3 hosting**: effects load from the `plugins/` folder shipped with the app. The effects themselves are not built yet.
-- **Projects** (`.fdm`) and **WAV export** (16/24/32-bit, deterministic offline render).
-- Computer keyboard plays the selected channel (A-K row, Z/X octave); space = play/stop.
+- **Layout**: REAPER-style top transport and track lanes, an Ableton-style detail panel underneath, and an explorer sidebar on the left. Dark red look inspired by Emulon X.
+- **Arrangement timeline**: clips are placed on a bar ruler per track. Double-click a lane to create a clip, drag to move, drag the right edge to resize, Ctrl+D duplicates, Del deletes, right-click for more. Click or drag the ruler to move the playhead; drag the thin strip above it to set the loop region. Ctrl+wheel zooms.
+- **Bottom panel**: *Piano Roll* (step grid for drums, piano roll for synths), *FX Chain* (4 VST3 slots per track, return and master) and *Session* (Ableton-style clip launcher and mixer). The ARRANGE / SESSION buttons choose what the transport plays.
+- **Explorer**: *VST* lists effects found in the `plugins/` folder (and any folders you add); double-click one to put it on the selected track. *Samples* browses your sample folders and previews files on click.
+- **Instruments**: a placeholder Drum Rack and Poly Synth so you can make sound for now. They will be replaced by hosted instrument plugins.
+- **Plugins**: VST3 hosting only. No effects or instruments are built in. VST2 is not supported.
+- **Projects** (`.fdm`) and **WAV export** (arrangement, scene or what's playing; 16/24/32-bit).
+- Computer keyboard plays the selected track (A-K row, Z/X octave); space = play/stop.
+
+Known limits: a track holds 8 different clips (placements of the same clip share its notes; use "Make clip unique" to split them), samples can be previewed but not yet placed on the timeline (no sampler yet), and the arrangement clips can only be moved within their own track.
 
 ## Build
 ```

@@ -448,3 +448,95 @@ TEST(offline_render_can_run_twice_on_the_same_engine) {
     e.renderOffline(0, 1, 0.25f, b.l, b.r);
     CHECK(a.l == b.l);
 }
+
+// ---------------------------------------------------------------------------
+// Arrangement timeline
+// ---------------------------------------------------------------------------
+
+TEST(placement_packing_round_trips) {
+    Channel c;
+    Placement p;
+    p.startTick = 7 * kTicksPerBar; p.lengthTicks = 3 * kTicksPerBar; p.slot = 5;
+    const int i = c.addPlacement(p);
+    CHECK(i == 0);
+    Placement q;
+    CHECK(c.getPlacement(i, q));
+    CHECK(q.startTick == p.startTick && q.lengthTicks == p.lengthTicks && q.slot == 5);
+    c.removePlacement(i);
+    CHECK(!c.getPlacement(i, q));
+    CHECK(c.countPlacements() == 0);
+}
+
+TEST(arrangement_plays_placements_at_their_bars_and_loops_the_clip_inside) {
+    Fixture f;
+    Clip& clip = f.channel().clips[0];
+    clip.create(1);
+    Fixture::note(clip, 60, 0);                                  // one note per bar of the clip
+    f.channel().addPlacement({2 * kTicksPerBar, 2 * kTicksPerBar, 0});   // bars 3 and 4
+    f.engine.arrangementMode.store(true);
+    f.engine.play();
+    Rendered out;
+    run(f.engine, 5 * kBar, out);
+
+    CHECK(f.mock.countOn(60) == 2);                              // nothing in bars 1-2 or after bar 4
+    auto* a = f.mock.nth(60, true, 0);
+    auto* b = f.mock.nth(60, true, 1);
+    CHECK(a && b);
+    if (!(a && b)) return;
+    CHECK_NEAR(a->sample, 2 * kBar, 1);
+    CHECK_NEAR(b->sample, 3 * kBar, 1);
+}
+
+TEST(arrangement_placement_shorter_than_clip_cuts_it_and_releases_notes) {
+    Fixture f;
+    Clip& clip = f.channel().clips[0];
+    clip.create(2);
+    Fixture::note(clip, 60, 0, 120);                             // sounds for far longer than the placement
+    f.channel().addPlacement({0, kTicksPerBar, 0});              // only one bar of the two-bar clip
+    f.engine.arrangementMode.store(true);
+    f.engine.play();
+    Rendered out;
+    run(f.engine, 2 * kBar, out);
+    auto* off = f.mock.nth(60, false, 0);
+    CHECK(off != nullptr);
+    if (off) CHECK_NEAR(off->sample, kBar, 2);
+}
+
+TEST(arrangement_seek_and_loop_region) {
+    Fixture f;
+    Clip& clip = f.channel().clips[0];
+    clip.create(1);
+    Fixture::note(clip, 60, 0);
+    f.channel().addPlacement({0, 8 * kTicksPerBar, 0});
+    f.engine.arrangementMode.store(true);
+    f.engine.loopStartTick.store(kTicksPerBar);
+    f.engine.loopEndTick.store(2 * kTicksPerBar);
+    f.engine.loopEnabled.store(true);
+    f.engine.setPlayhead(kTicksPerBar);                          // start inside the loop
+    f.engine.play();
+    Rendered out;
+    run(f.engine, 4 * kBar, out);
+    CHECK(f.mock.countOn(60) >= 4);                              // loop keeps retriggering the bar-2 note
+    CHECK(f.engine.positionTicks() >= kTicksPerBar && f.engine.positionTicks() < 2 * kTicksPerBar);
+    f.engine.stop();
+    run(f.engine, 512, out);
+    CHECK(f.engine.positionTicks() == kTicksPerBar);             // stop returns to the start marker
+}
+
+TEST(arrangement_offline_render_matches_timeline_and_leaves_state_alone) {
+    Engine e;
+    e.prepare(kSr, 512);
+    fdm::buildDemoProject(e);
+    e.bpm.set(120.0f);
+    for (int i = 0; i < kMaxChannels; ++i)
+        if (e.channel(i).active.load()) e.channel(i).addPlacement({kTicksPerBar, 2 * kTicksPerBar, 0});
+    CHECK(e.arrangementEndTick() == 3 * kTicksPerBar);
+    std::vector<float> L, R;
+    e.renderOffline(Engine::kRenderArrangement, 0, 0.0f, L, R);
+    CHECK(L.size() == static_cast<size_t>(3 * kBar));
+    float first = 0, rest = 0;
+    for (size_t i = 0; i < L.size(); ++i) (i < static_cast<size_t>(kBar) ? first : rest) = std::max(i < static_cast<size_t>(kBar) ? first : rest, std::fabs(L[i]));
+    CHECK(first == 0.0f);                                        // bar 1 is empty
+    CHECK(rest > 0.01f);
+    CHECK(!e.arrangementMode.load());                            // mode restored
+}

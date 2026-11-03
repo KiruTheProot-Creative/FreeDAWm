@@ -61,12 +61,18 @@ public:
     void paintButton(juce::Graphics& g, bool over, bool down) override {
         auto r = getLocalBounds().toFloat().reduced(1.0f);
         const bool on = getToggleState();
-        g.setColour(on ? onColour_ : (down || over ? theme::panelHover : theme::panelRaised));
-        g.fillRoundedRectangle(r, 4.0f);
+        {
+            const auto top = on ? onColour_.brighter(0.15f) : theme::panelRaised.brighter(over ? 0.3f : 0.18f);
+            const auto bot = on ? onColour_.darker(0.55f) : theme::panelRaised.darker(0.35f);
+            g.setGradientFill(juce::ColourGradient(down ? bot : top, 0.0f, r.getY(), down ? top : bot, 0.0f, r.getBottom(), false));
+            g.fillRoundedRectangle(r, 5.0f);
+            g.setColour(juce::Colours::black.withAlpha(0.7f));
+            g.drawRoundedRectangle(r, 5.0f, 1.0f);
+        }
 
         const auto c = r.getCentre();
         const float s = juce::jmin(r.getWidth(), r.getHeight()) * 0.30f;
-        g.setColour(on ? theme::background : theme::text);
+        g.setColour(on ? juce::Colours::white : theme::text);
 
         switch (icon_) {
             case Icon::Play: {

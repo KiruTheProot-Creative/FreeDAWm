@@ -47,6 +47,20 @@ public:
     Param swing {"swing", "Swing", 0.0f, 0.5f, 0.0f};     // fraction of a 16th step the off-beat 16ths are delayed
     std::atomic<int> launchQuantizeTicks{kTicksPerBar};   // 0 = launch at the next tick
 
+    // ---- arrangement timeline --------------------------------------------
+    /** When true the transport plays each channel's placements instead of launched clips. */
+    std::atomic<bool> arrangementMode{false};
+    std::atomic<bool> loopEnabled{false};
+    std::atomic<int>  loopStartTick{0};
+    std::atomic<int>  loopEndTick{kTicksPerBar * 4};
+
+    /** Moves the playhead (the transport keeps playing if it is). */
+    void    setPlayhead(int64_t ticks);
+    /** End of the last placement on any channel, rounded up to a whole bar (0 if empty). */
+    int64_t arrangementEndTick();
+    /** renderOffline() scene value that renders the arrangement from tick 0. */
+    static constexpr int kRenderArrangement = -2;
+
     // ---- channels & mixer ------------------------------------------------
     Channel& channel(int i) { return channels_[static_cast<size_t>(i)]; }
     Strip&   returnStrip(int i) { return returns_[static_cast<size_t>(i)]; }
@@ -89,6 +103,7 @@ private:
     void stopTransportInternal();
     void drainLiveEvents();
     void processTick();
+    void releaseAllChannels();
     void triggerNotes(Channel& ch, Clip& clip, int local, int len, IInstrument& inst);
     void renderInstruments(int pos, int count);
     void mix(float* outL, float* outR, int n);
@@ -117,6 +132,8 @@ private:
     double               countdown_  = 0.0;     // samples until the next tick fires
     std::atomic<bool>    playingFlag_{false};
     std::atomic<int64_t> positionTicks_{0};
+    std::atomic<int64_t> playStartTick_{0};   // where play() begins (the playhead / start marker)
+    std::atomic<int64_t> seekRequest_{-1};
 
     // live MIDI queue: many producers (spin-locked), one consumer (audio thread)
     static constexpr uint32_t kLiveCap = 1024;
