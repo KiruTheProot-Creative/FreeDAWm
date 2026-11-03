@@ -4,6 +4,7 @@
 
 #include "Common.h"
 #include "PluginHost.h"
+#include "PluginInstrument.h"
 #include "Prefs.h"
 
 /** Everything the UI needs: the engine, audio/MIDI I/O, plugin hosting, the
@@ -55,6 +56,16 @@ public:
     int          nextFreeFxSlot(fdm::Strip& strip);
     int          effectCount(fdm::Strip& strip);
     void         showEffectEditor(fdm::Strip& strip, int slot);
+
+    // ---- instrument plugins on MIDI tracks --------------------------------------------
+    /** Loads an instrument plugin onto a MIDI track (replacing its built-in or previous instrument).
+        Returns an error message, or an empty string on success. */
+    juce::String      loadInstrument(int channel, const juce::PluginDescription& description, const juce::MemoryBlock* savedState = nullptr);
+    void              clearInstrument(int channel);              // back to the built-in placeholder
+    PluginInstrument* instrumentAt(int channel);
+    void              showInstrumentEditor(int channel);
+    /** Loads the instrument on the selected MIDI track, or on a new MIDI track if an audio track/bus is selected. */
+    juce::String      loadInstrumentFromUi(const juce::PluginDescription& description, bool forceNewTrack = false);
 
     // ---- live notes (computer keyboard, on-screen keys) -------------------------
     void previewNoteOn(int note, int velocity = 100);
@@ -117,6 +128,11 @@ public:
     // Destroyed before the engine, so no editor outlives the plugin it shows.
     std::map<fdm::IEffect*, std::unique_ptr<PluginWindow>> editors;
 
+private:
+    std::map<int, std::unique_ptr<PluginInstrument>> instruments_;
+    std::map<int, std::unique_ptr<PluginWindow>>     instrumentEditors_;      // destroyed before the instruments
+public:
+
     void saveSettings();
     void structureHasChanged() { notifyStructureChanged(); }     // e.g. after a clip is created or deleted
 
@@ -133,6 +149,7 @@ private:
     void attachAudio();
     void detachAudio();
     void clearAllEffects();
+    void clearAllInstruments();
     void closeEditorsFor(fdm::Strip& strip);
     void resetMixerAndTransport();
     void notifyStructureChanged();

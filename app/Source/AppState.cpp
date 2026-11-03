@@ -56,6 +56,7 @@ AppState::~AppState() {
     previewThread_.stopThread(2000);
     editors.clear();
     clearAllEffects();
+    clearAllInstruments();
 }
 
 void AppState::saveSettings() {
@@ -143,6 +144,9 @@ void AppState::removeChannel(int index) {
         auto& ch = engine.channel(index);
         closeEditorsFor(ch);
         for (int s = 0; s < fdm::kMaxFxSlots; ++s) engine.swapEffect(ch.fx[static_cast<size_t>(s)], nullptr);
+        instrumentEditors_.erase(index);
+        ch.external.store(nullptr);
+        instruments_.erase(index);
         engine.removeChannel(index);
     }
     // Select something that still exists.
@@ -211,10 +215,97 @@ void AppState::showEffectEditor(fdm::Strip& strip, int slot) {
     if (fx == nullptr) return;
     auto it = editors.find(fx);
     if (it != editors.end()) { it->second->toFront(true); return; }
-    editors[fx] = std::make_unique<PluginWindow>(*fx, [this, fx] {
+    editors[fx] = std::make_unique<PluginWindow>(fx->plugin(), [this, fx] {
         juce::MessageManager::callAsync([this, fx] { editors.erase(fx); });
     });
     editors[fx]->setAlwaysOnTop(prefs->getBool("pluginWindowsOnTop"));
+}
+
+// ===========================================================================
+// Instrument plugins
+// ===========================================================================
+
+PluginInstrument* AppState::instrumentAt(int channel) {
+    auto it = instruments_.find(channel);
+    return it != instruments_.end() ? it->second.get() : nullptr;
+}
+
+juce::String AppState::loadInstrument(int channel, const juce::PluginDescription& description, const juce::MemoryBlock* savedState) {
+    if (channel < 0 || channel >= fdm::kMaxChannels || !engine.channel(channel).active.load()) return "There is no such track.";
+    if (engine.channel(channel).isAudio()) return "Instruments go on MIDI tracks, not audio tracks.";
+
+    juce::String error;
+    auto plugin = pluginHost->createInstrument(description, engine.sampleRate(), blockSize_, error);
+    if (plugin == nullptr) return error;
+    if (savedState != nullptr && savedState->getSize() > 0)
+        plugin->setStateInformation(savedState->getData(), static_cast<int>(savedState->getSize()));
+
+    auto instrument = std::make_unique<PluginInstrument>(std::move(plugin));
+    instrument->prepare(engine.sampleRate(), blockSize_);
+
+    instrumentEditors_.erase(channel);
+    std::unique_ptr<PluginInstrument> old;
+    {
+        ScopedAudioPause pause(*this);              // the audio thread must not be inside the old instrument
+        auto& ch = engine.channel(channel);
+        ch.numPending = 0;
+        ch.external.store(instrument.get(), std::memory_order_release);
+        old = std::move(instruments_[channel]);
+        instruments_[channel] = std::move(instrument);
+    }
+    old.reset();
+    notifyStructureChanged();
+    return {};
+}
+
+void AppState::clearInstrument(int channel) {
+    if (instrumentAt(channel) == nullptr) return;
+    instrumentEditors_.erase(channel);
+    std::unique_ptr<PluginInstrument> old;
+    {
+        ScopedAudioPause pause(*this);
+        engine.channel(channel).numPending = 0;
+        engine.channel(channel).external.store(nullptr, std::memory_order_release);
+        old = std::move(instruments_[channel]);
+        instruments_.erase(channel);
+    }
+    old.reset();
+    notifyStructureChanged();
+}
+
+void AppState::clearAllInstruments() {                // caller has stopped the audio callback
+    instrumentEditors_.clear();
+    for (auto& [channel, inst] : instruments_) engine.channel(channel).external.store(nullptr);
+    instruments_.clear();
+}
+
+void AppState::showInstrumentEditor(int channel) {
+    auto* inst = instrumentAt(channel);
+    if (inst == nullptr) return;
+    if (auto it = instrumentEditors_.find(channel); it != instrumentEditors_.end()) { it->second->toFront(true); return; }
+    instrumentEditors_[channel] = std::make_unique<PluginWindow>(inst->plugin(), [this, channel] {
+        juce::MessageManager::callAsync([this, channel] { instrumentEditors_.erase(channel); });
+    });
+    instrumentEditors_[channel]->setAlwaysOnTop(prefs->getBool("pluginWindowsOnTop"));
+}
+
+juce::String AppState::loadInstrumentFromUi(const juce::PluginDescription& description, bool forceNewTrack) {
+    int channel = -1;
+    if (auto* ch = selectedChannel(); ch != nullptr && !ch->isAudio() && !forceNewTrack) channel = selection_.index;
+    const bool newTrack = channel < 0;
+    if (newTrack) {
+        channel = addChannel(fdm::InstrumentType::PolySynth);
+        if (channel < 0) return "All " + juce::String(fdm::kMaxChannels) + " tracks are in use.";
+        engine.channel(channel).setName(description.name.substring(0, 30).toRawUTF8());
+    }
+    const auto error = loadInstrument(channel, description);
+    if (error.isNotEmpty()) {
+        if (newTrack) removeChannel(channel);
+        return error;
+    }
+    if (prefs->getBool("openEditorOnLoad")) showInstrumentEditor(channel);
+    selectChannel(channel, selection_.scene);
+    return {};
 }
 
 void AppState::closeEditorsFor(fdm::Strip& strip) {
@@ -440,6 +531,7 @@ void AppState::newProject() {
         ScopedAudioPause pause(*this);
         editors.clear();
         clearAllEffects();
+        clearAllInstruments();
         for (int i = 0; i < fdm::kMaxChannels; ++i) engine.removeChannel(i);
         engine.clearSamples();
         resetMixerAndTransport();
@@ -589,6 +681,14 @@ juce::Result AppState::writeProject(const juce::File& file) {
             audioClips.add(var(entry));
         }
         obj->setProperty("audioClips", audioClips);
+        if (auto* inst = instrumentAt(i)) {                   // instrument plugin: description + its own state
+            auto p = new DynamicObject();
+            if (auto xml = inst->plugin().getPluginDescription().createXml()) p->setProperty("plugin", xml->toString());
+            juce::MemoryBlock state;
+            inst->plugin().getStateInformation(state);
+            p->setProperty("state", state.toBase64Encoding());
+            obj->setProperty("instrumentPlugin", var(p));
+        }
         obj->setProperty("color", ch.colorIndex.load());
         obj->setProperty("solo", ch.solo.load());
         juce::Array<var> sends;
@@ -673,6 +773,7 @@ juce::Result AppState::loadProject(const juce::File& file) {
         ScopedAudioPause pause(*this);
         editors.clear();
         clearAllEffects();
+        clearAllInstruments();
         for (int i = 0; i < fdm::kMaxChannels; ++i) engine.removeChannel(i);
         resetMixerAndTransport();
 
@@ -710,6 +811,18 @@ juce::Result AppState::loadProject(const juce::File& file) {
                     for (int s = 0; s < fdm::kNumReturns && s < sends->size(); ++s)
                         ch.sends[static_cast<size_t>(s)].store(static_cast<float>(static_cast<double>((*sends)[s])));
                 varToParams(cv["params"], drums ? ch.drums.params() : ch.synth.params());
+                if (const var ip = cv["instrumentPlugin"]; ip.isObject()) {
+                    std::unique_ptr<juce::XmlElement> xml = juce::XmlDocument::parse(ip["plugin"].toString());
+                    juce::PluginDescription desc;
+                    if (xml != nullptr && desc.loadFromXml(*xml)) {
+                        juce::MemoryBlock state;
+                        state.fromBase64Encoding(ip["state"].toString());
+                        const auto err = loadInstrument(index, desc, &state);
+                        if (err.isNotEmpty()) problems.add(desc.name + " (instrument on " + juce::String(ch.name) + "): " + err);
+                    } else {
+                        problems.add("An instrument plugin entry was unreadable.");
+                    }
+                }
                 if (auto* audioClips = cv["audioClips"].getArray())
                     for (auto& av : *audioClips)
                         if (auto* a = av.getArray(); a != nullptr && a->size() >= 3)

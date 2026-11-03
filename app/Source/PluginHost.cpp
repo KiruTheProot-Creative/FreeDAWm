@@ -46,10 +46,9 @@ int Vst3Effect::latencySamples() const { return plugin_->getLatencySamples(); }
 // PluginWindow
 // ===========================================================================
 
-PluginWindow::PluginWindow(Vst3Effect& effect, std::function<void()> onCloseRequested)
-    : juce::DocumentWindow(effect.plugin().getName(), juce::Colour(0xff1c1f26), juce::DocumentWindow::closeButton),
+PluginWindow::PluginWindow(juce::AudioPluginInstance& plugin, std::function<void()> onCloseRequested)
+    : juce::DocumentWindow(plugin.getName(), juce::Colour(0xff1c1f26), juce::DocumentWindow::closeButton),
       onClose_(std::move(onCloseRequested)) {
-    auto& plugin = effect.plugin();
     juce::AudioProcessorEditor* editor = plugin.hasEditor() ? plugin.createEditorIfNeeded() : nullptr;
     if (editor == nullptr) editor = new juce::GenericAudioProcessorEditor(plugin);
 
@@ -251,4 +250,41 @@ juce::AudioPluginFormat* PluginHost::formatFor(const juce::String& name) const {
     for (int i = 0; i < formatManager.getNumFormats(); ++i)
         if (formatManager.getFormat(i)->getName() == name) return formatManager.getFormat(i);
     return nullptr;
+}
+
+juce::Array<juce::PluginDescription> PluginHost::availableInstruments() const {
+    juce::Array<juce::PluginDescription> list;
+    for (auto& d : knownPlugins.getTypes())
+        if (d.isInstrument && (d.pluginFormatName == "VST3" || (vst2Enabled_ && d.pluginFormatName == Vst2Format::formatName()))) list.add(d);
+    struct ByName {
+        static int compareElements(const juce::PluginDescription& a, const juce::PluginDescription& b) { return a.name.compareNatural(b.name); }
+    } sorter;
+    list.sort(sorter);
+    return list;
+}
+
+std::unique_ptr<juce::AudioPluginInstance> PluginHost::createInstrument(const juce::PluginDescription& description, double sampleRate,
+                                                                        int blockSize, juce::String& error) {
+    auto instance = formatManager.createPluginInstance(description, sampleRate, blockSize, error);
+    if (instance == nullptr) {
+        if (error.isEmpty()) error = "The plugin could not be loaded.";
+        return nullptr;
+    }
+    if (instance->getBusCount(false) < 1) {
+        error = description.name + " has no audio output.";
+        return nullptr;
+    }
+    // Preferred: no inputs, stereo main output, extra outputs (multi-out samplers) off.
+    auto layout = instance->getBusesLayout();
+    for (int i = 0; i < layout.inputBuses.size(); ++i) layout.inputBuses.getReference(i) = juce::AudioChannelSet::disabled();
+    for (int i = 0; i < layout.outputBuses.size(); ++i)
+        layout.outputBuses.getReference(i) = i == 0 ? juce::AudioChannelSet::stereo() : juce::AudioChannelSet::disabled();
+    if (!instance->setBusesLayout(layout)) {
+        // Some instruments insist on their input bus; keep the inputs as they are and only fix the outputs.
+        auto fallback = instance->getBusesLayout();
+        for (int i = 0; i < fallback.outputBuses.size(); ++i)
+            fallback.outputBuses.getReference(i) = i == 0 ? juce::AudioChannelSet::stereo() : juce::AudioChannelSet::disabled();
+        instance->setBusesLayout(fallback);         // if this fails too, the plugin's own layout is used as-is
+    }
+    return instance;
 }

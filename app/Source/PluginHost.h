@@ -27,7 +27,7 @@ private:
 /** A floating window showing a plugin's own editor (or a generic one). */
 class PluginWindow : public juce::DocumentWindow {
 public:
-    PluginWindow(Vst3Effect& effect, std::function<void()> onCloseRequested);
+    PluginWindow(juce::AudioPluginInstance& plugin, std::function<void()> onCloseRequested);
     void closeButtonPressed() override { if (onClose_) onClose_(); }
 
 private:
@@ -66,6 +66,12 @@ public:
 
     /** Effects (not instruments) that have been found, sorted by name. */
     juce::Array<juce::PluginDescription> availableEffects() const;
+    /** Instrument plugins that have been found, sorted by name. */
+    juce::Array<juce::PluginDescription> availableInstruments() const;
+
+    /** Creates an instrument plugin with a stereo main output (inputs and extra outputs off where possible). */
+    std::unique_ptr<juce::AudioPluginInstance> createInstrument(const juce::PluginDescription& description, double sampleRate,
+                                                                int blockSize, juce::String& error);
 
     std::unique_ptr<fdm::IEffect> createEffect(const juce::PluginDescription& description, double sampleRate,
                                                int blockSize, juce::String& error);

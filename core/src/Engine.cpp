@@ -441,8 +441,26 @@ void Engine::renderInstruments(int pos, int count, double tickPos, bool timeline
                 renderAudioClips(ch, chL_[static_cast<size_t>(i)].data() + pos, chR_[static_cast<size_t>(i)].data() + pos, count, tickPos);
             continue;
         }
-        ch.instrument().render(chL_[static_cast<size_t>(i)].data() + pos,
-                               chR_[static_cast<size_t>(i)].data() + pos, count);
+        IInstrument& inst = ch.instrument();
+        if (inst.wantsWholeBlocks()) continue;                    // rendered once per block in renderWholeBlocks()
+        inst.render(chL_[static_cast<size_t>(i)].data() + pos, chR_[static_cast<size_t>(i)].data() + pos, count);
+    }
+}
+
+void Engine::setBlockOffsets(int frame) {
+    for (auto& ch : channels_) {
+        if (!ch.active.load(std::memory_order_relaxed) || ch.isAudio()) continue;
+        IInstrument& inst = ch.instrument();
+        if (inst.wantsWholeBlocks()) inst.setBlockOffset(frame);
+    }
+}
+
+void Engine::renderWholeBlocks(int n) {
+    for (int i = 0; i < kMaxChannels; ++i) {
+        Channel& ch = channels_[static_cast<size_t>(i)];
+        if (!ch.active.load(std::memory_order_relaxed) || ch.isAudio()) continue;
+        IInstrument& inst = ch.instrument();
+        if (inst.wantsWholeBlocks()) inst.render(chL_[static_cast<size_t>(i)].data(), chR_[static_cast<size_t>(i)].data(), n);
     }
 }
 
@@ -529,6 +547,7 @@ void Engine::mix(float* outL, float* outR, int n) {
 }
 
 void Engine::processChunk(float* outL, float* outR, int n) {
+    setBlockOffsets(0);
     applyTransportCommand();
     drainLiveEvents();
 
@@ -545,6 +564,7 @@ void Engine::processChunk(float* outL, float* outR, int n) {
         int pos = 0;
         while (pos < n) {
             if (countdown_ <= 0.0) {
+                setBlockOffsets(pos);                                     // notes from this tick land at this frame
                 const int64_t seek = seekRequest_.exchange(-1, std::memory_order_acquire);
                 if (seek >= 0) { releaseAllChannels(); globalTick_ = seek; }
                 if (loopEnabled.load(std::memory_order_relaxed)) {        // wrap before the tick plays
@@ -570,6 +590,7 @@ void Engine::processChunk(float* outL, float* outR, int n) {
     } else {
         renderInstruments(0, n, 0.0, false);
     }
+    renderWholeBlocks(n);
 
     mix(outL, outR, n);
     blockCounter_.fetch_add(1, std::memory_order_release);

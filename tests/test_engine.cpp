@@ -629,3 +629,51 @@ TEST(audio_clip_follows_seek_and_loop) {
     e.clearSamples();
     CHECK(e.sample(smp) == nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// Block-based (plugin) instruments
+// ---------------------------------------------------------------------------
+
+TEST(whole_block_instruments_get_sample_accurate_offsets_and_one_render_per_block) {
+    Engine e;
+    e.prepare(kSr, 512);
+    e.bpm.set(120.0f);
+    BlockMockInstrument inst;
+    const int ch = e.addChannel(InstrumentType::PolySynth);
+    e.channel(ch).external.store(&inst);
+    Clip& c = e.channel(ch).clips[0];
+    c.create(1);
+    NoteEvent n1; n1.pitch = 60; n1.start = 0; n1.length = kTicksPerStep;
+    NoteEvent n2; n2.pitch = 62; n2.start = kTicksPerBeat + 7; n2.length = kTicksPerStep;     // lands mid-block
+    c.addNote(n1);
+    c.addNote(n2);
+    e.channel(ch).addPlacement({0, kTicksPerBar, 0});
+    e.arrangementMode.store(true);
+    e.play();
+    Rendered out;
+    run(e, kBar, out, 512);
+    auto* a = inst.nth(60, true, 0);
+    auto* b = inst.nth(62, true, 0);
+    auto* off = inst.nth(60, false, 0);
+    CHECK(a && b && off);
+    if (!(a && b && off)) return;
+    CHECK_NEAR(a->sample, 0, 1);
+    CHECK_NEAR(b->sample, kBeat + 7 * 25, 1);                     // 25 samples per tick at 120 BPM / 48 kHz
+    CHECK_NEAR(off->sample, 6000, 1);
+    CHECK(inst.renders == (kBar + 511) / 512);                    // exactly one render per block
+    CHECK(inst.rendered == kBar);
+}
+
+TEST(whole_block_instruments_receive_live_notes_when_stopped) {
+    Engine e;
+    e.prepare(kSr, 256);
+    BlockMockInstrument inst;
+    const int ch = e.addChannel(InstrumentType::PolySynth);
+    e.channel(ch).external.store(&inst);
+    e.liveNoteOn(ch, 64, 100);
+    Rendered out;
+    run(e, 1024, out, 256);
+    auto* on = inst.nth(64, true, 0);
+    CHECK(on != nullptr && on->sample == 0);
+    CHECK(inst.renders == 4);
+}

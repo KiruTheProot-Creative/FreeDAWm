@@ -18,7 +18,8 @@ public:
 
     bool isDrum() const {
         auto* ch = app_.selectedChannel();
-        return ch != nullptr && ch->instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack);
+        return ch != nullptr && ch->instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack)
+               && app_.instrumentAt(app_.selection().index) == nullptr;          // plugins get the full piano roll
     }
     int numRows() const { return isDrum() ? fdm::DrumRack::kNumPads : kHighNote - kLowNote + 1; }
     int rowHeight() const { return isDrum() ? 24 : 16; }

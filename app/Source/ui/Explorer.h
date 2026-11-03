@@ -78,9 +78,21 @@ public:
         g.drawText(r.title, 46, 0, w - 50, h, juce::Justification::centredLeft, true);
     }
 
-    void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override { load(row); }
+    void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override {
+        if (row >= 0 && row < getNumRows() && rows_[static_cast<size_t>(row)].desc.isInstrument) loadInstrument(row, false);
+        else load(row);
+    }
     void listBoxItemClicked(int row, const juce::MouseEvent& e) override {
         if (!e.mods.isPopupMenu() || row < 0 || row >= getNumRows() || rows_[static_cast<size_t>(row)].header) return;
+        if (rows_[static_cast<size_t>(row)].desc.isInstrument) {
+            juce::PopupMenu m;
+            auto* ch = app_.selectedChannel();
+            m.addItem(1, "Load on the selected track" + (ch != nullptr && !ch->isAudio() ? "  (" + juce::String(ch->name) + ")" : juce::String()),
+                      ch != nullptr && !ch->isAudio());
+            m.addItem(2, "Load on a new track");
+            m.showMenuAsync(juce::PopupMenu::Options(), [this, row](int id) { if (id > 0) loadInstrument(row, id == 2); });
+            return;
+        }
         auto* strip = app_.selectedStrip();
         if (strip == nullptr) return;
         juce::PopupMenu m;
@@ -102,6 +114,12 @@ private:
         juce::String title;
         juce::PluginDescription desc;
     };
+
+    void loadInstrument(int row, bool newTrack) {
+        const auto error = app_.loadInstrumentFromUi(rows_[static_cast<size_t>(row)].desc, newTrack);
+        if (error.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Couldn't load instrument", error);
+    }
 
     void load(int row, int forcedSlot = -1) {
         if (row < 0 || row >= getNumRows() || rows_[static_cast<size_t>(row)].header) return;
@@ -142,13 +160,22 @@ private:
             rows_.push_back(h);
             for (auto& i : items) rows_.push_back(i);
         };
+        std::vector<Row> instruments;
+        for (auto& d : app_.pluginHost->availableInstruments()) {
+            if (filter_.isNotEmpty() && !d.name.containsIgnoreCase(filter_) && !d.manufacturerName.containsIgnoreCase(filter_)) continue;
+            Row r;
+            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + "]");
+            r.desc = d;
+            instruments.push_back(r);
+        }
+        addSection("Instruments", instruments);
         addSection("Bundled effects", official);
-        addSection("Installed plugins", other);
+        addSection("Installed effects", other);
         list_.updateContent();
         list_.repaint();
 
-        status_.setText(all.isEmpty() ? "NO EFFECTS FOUND YET. PUT VST3 OR VST2 PLUGINS IN THE PLUGINS FOLDER, THEN PRESS SCAN."
-                                      : "DOUBLE-CLICK A PLUGIN TO ADD IT TO THE SELECTED TRACK",
+        status_.setText(all.isEmpty() && instruments.empty() ? "NO PLUGINS FOUND YET. PUT VST3 OR VST2 PLUGINS IN THE PLUGINS FOLDER, THEN PRESS SCAN."
+                                      : "DOUBLE-CLICK: EFFECTS GO ON THE SELECTED TRACK, INSTRUMENTS REPLACE ITS INSTRUMENT",
                         juce::dontSendNotification);
     }
 

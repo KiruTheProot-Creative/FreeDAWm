@@ -71,6 +71,17 @@ struct MockInstrument : fdm::IInstrument {
     }
 };
 
+/** Records notes like a plugin would: with an offset inside the block, rendered once per block. */
+struct BlockMockInstrument : MockInstrument {
+    int offset = 0;
+    int renders = 0;
+    bool wantsWholeBlocks() const override { return true; }
+    void setBlockOffset(int f) override { offset = f; }
+    void noteOn(int n, float v) override { events.push_back({rendered + offset, n, true, v}); }
+    void noteOff(int n) override { events.push_back({rendered + offset, n, false, 0.0f}); }
+    void render(float* l, float* r, int n) override { ++renders; MockInstrument::render(l, r, n); }
+};
+
 struct TestGain : fdm::IEffect {
     float gain;
     explicit TestGain(float g) : gain(g) {}

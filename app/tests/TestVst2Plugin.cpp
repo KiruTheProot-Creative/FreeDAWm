@@ -31,6 +31,11 @@ struct TestPlugin {
     int notes = 0;
     int program = 0;
     float chunk[2] = {};
+    // FDM_TEST_SYNTH: notes held, and note events waiting for this block (frame, on/off)
+    int held = 0;
+    int pendingCount = 0;
+    int pendingFrame[256] = {};
+    bool pendingOn[256] = {};
 };
 
 TestPlugin* self(Plugin* p) { return static_cast<TestPlugin*>(p->pluginObject); }
@@ -41,11 +46,18 @@ iptr FDM_VST2_CALL dispatch(Plugin* p, i32 opcode, i32 index, iptr value, void* 
     TestPlugin* t = self(p);
     switch (opcode) {
         case op::close: delete t; return 1;
-        case op::getEffectName: copyText(ptr, t->multiplier > 2.0f ? "FDM Shell B" : (t->multiplier > 1.0f ? "?" : "FDM Test Gain")); return 1;
+        case op::getEffectName:
+           #ifdef FDM_TEST_SYNTH
+            copyText(ptr, "FDM Test Synth"); return 1;
+           #endif
+            copyText(ptr, t->multiplier > 2.0f ? "FDM Shell B" : (t->multiplier > 1.0f ? "?" : "FDM Test Gain")); return 1;
         case op::getVendor: copyText(ptr, "FreeDAWm Tests"); return 1;
         case op::getProduct: copyText(ptr, "FDM Test"); return 1;
         case op::getVendorVersion: return 1000;
         case op::getCategory:
+           #ifdef FDM_TEST_SYNTH
+            return category::instrument;
+           #endif
            #ifdef FDM_TEST_SHELL
             if (t->multiplier == 0.0f) return category::shell;
            #endif
@@ -71,8 +83,16 @@ iptr FDM_VST2_CALL dispatch(Plugin* p, i32 opcode, i32 index, iptr value, void* 
         case op::sendEvents: {
             auto* list = static_cast<Events*>(ptr);
             auto** slots = reinterpret_cast<MidiEvent**>(reinterpret_cast<char*>(list) + offsetof(Events, events));
-            for (int i = 0; i < list->count; ++i)
-                if ((slots[i]->data[0] & 0xf0) == 0x90 && slots[i]->data[2] != 0) ++t->notes;
+            for (int i = 0; i < list->count; ++i) {
+                const int status = slots[i]->data[0] & 0xf0;
+                const bool on = status == 0x90 && slots[i]->data[2] != 0;
+                const bool off = status == 0x80 || (status == 0x90 && slots[i]->data[2] == 0);
+                if (on) ++t->notes;
+                if ((on || off) && t->pendingCount < 256) {
+                    t->pendingFrame[t->pendingCount] = slots[i]->frameOffset;
+                    t->pendingOn[t->pendingCount++] = on;
+                }
+            }
             t->params[2] = static_cast<float>(t->notes) / 100.0f;
             return 1;
         }
@@ -95,9 +115,20 @@ void FDM_VST2_CALL processReplacing(Plugin* p, float** in, float** out, i32 fram
     TestPlugin* t = self(p);
     if (auto* time = reinterpret_cast<TimeInfo*>(t->host(p, host::getTime, 0, 0, nullptr, 0.0f)))
         t->params[1] = static_cast<float>(time->tempo / 1000.0);
+#ifdef FDM_TEST_SYNTH
+    // An "instrument": outputs 0.25 while any note is held, switching exactly at each event's frame.
+    (void) in;
+    int e = 0;
+    for (int i = 0; i < frames; ++i) {
+        while (e < t->pendingCount && t->pendingFrame[e] <= i) { t->held += t->pendingOn[e] ? 1 : -1; if (t->held < 0) t->held = 0; ++e; }
+        out[0][i] = out[1][i] = t->held > 0 ? 0.25f : 0.0f;
+    }
+    t->pendingCount = 0;
+#else
     const float gain = 2.0f * t->params[0] * t->multiplier;
     for (int c = 0; c < 2; ++c)
         for (int i = 0; i < frames; ++i) out[c][i] = in[c][i] * gain;
+#endif
 }
 
 }  // namespace
@@ -129,6 +160,10 @@ EXPORT Plugin* VSTPluginMain(HostFn host) {
     v.numInputs = 2;
     v.numOutputs = 2;
     v.flags = flag::canReplace | flag::chunks;
+#ifdef FDM_TEST_SYNTH
+    v.flags |= flag::isInstrument;
+    v.numInputs = 0;
+#endif
     v.latency = 0;
     v.pluginObject = t;
     v.uniqueId = 0x46446d54;

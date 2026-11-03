@@ -680,7 +680,11 @@ public:
 
         g.setColour(theme::textDim);
         g.setFont(theme::labelFont(9.5f, false));
-        g.drawText(ch.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack) ? "DRUM RACK - TEMP" : (ch.isAudio() ? "AUDIO" : "POLY SYNTH - TEMP"),
+        juce::String subtitle = ch.isAudio() ? "AUDIO"
+                              : (ch.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack) ? "DRUM RACK - TEMP" : "POLY SYNTH - TEMP");
+        if (auto* plugin = app_.instrumentAt(index_)) subtitle = juce::String(plugin->name()).toUpperCase();
+        g.setColour(app_.instrumentAt(index_) != nullptr ? theme::readout : theme::textDim);
+        g.drawText(subtitle,
                    16, 22, getWidth() - 60, 12, juce::Justification::centredLeft);
 
         // meter
@@ -713,6 +717,7 @@ public:
 
 private:
     void selectionChanged() override { repaint(); }
+    void structureChanged() override { repaint(); }
 
     void timerCallback() override {
         auto& ch = app_.engine.channel(index_);

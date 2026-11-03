@@ -18,7 +18,12 @@ A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-ma
 - **Explorer**:
   - *VST*: lists effects found in the `plugins/` folder (and any folders you add). Double-click one to add it to the selected track.
   - *Samples*: browses your sample folders. Click to preview, drag onto the timeline.
-- **Instruments**: a temporary Drum Rack and Poly Synth so MIDI tracks make sound for now. They will be replaced by hosted instrument plugins.
+- **Instruments**: any VST3 or VST2 instrument plugin (Kontakt, Serum, Vital...) on a MIDI track.
+  - Double-click it in the explorer's *Instruments* section to load it onto the selected MIDI track. If an audio track is selected, it goes onto a new MIDI track.
+  - Or use "Load plugin..." on the instrument card in the FX Chain tab.
+  - Notes reach the plugin sample-accurately, while the plugin still renders normal-sized blocks.
+  - The plugin's state is saved with the project.
+  - A temporary Drum Rack and Poly Synth remain as fallbacks.
 - **Plugins**: VST3, and VST2 through FreeDAWm's own clean-room host (see below). No effects or instruments are built in.
 - **Projects** (`.fdm`; sound files are referenced by path) and **WAV export** of the whole timeline (16/24/32-bit).
 - **Preferences** (toolbar button or Ctrl+,): ten tabs.

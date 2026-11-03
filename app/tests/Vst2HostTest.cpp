@@ -1,6 +1,7 @@
 // Loads FreeDAWm's test VST2 plugins through the clean-room host and checks everything end to end.
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "../Source/PluginInstrument.h"
 #include "../Source/PluginScanner.h"
 #include "../Source/vst2/Vst2Format.h"
 
@@ -25,7 +26,7 @@ int main(int argc, char** argv) {
         juce::ScopedJuceInitialiser_GUI juce;
         return pluginscan::runWorker(args);
     }
-    if (argc < 5) { std::printf("usage: %s <plugin> <shell> <crashing plugin> <hanging plugin>\n", argv[0]); return 2; }
+    if (argc < 6) { std::printf("usage: %s <plugin> <shell> <crashing plugin> <hanging plugin> <synth>\n", argv[0]); return 2; }
     juce::ScopedJuceInitialiser_GUI juce;
     Vst2Format format;
 
@@ -136,6 +137,43 @@ int main(int argc, char** argv) {
         bool abortNow = false;
         auto aborted = pluginscan::scanInChildProcess(self, "VST2", argv[4], 30000, [&] { return std::exchange(abortNow, true); });
         EXPECT(aborted.aborted);
+    }
+
+    std::printf("[ .. ] instrument plugin played by the engine, sample-accurately\n");
+    {
+        juce::OwnedArray<juce::PluginDescription> synths;
+        format.findAllTypesForFile(synths, argv[5]);
+        EXPECT(synths.size() == 1 && synths[0]->isInstrument && synths[0]->name == "FDM Test Synth");
+        if (synths.size() == 1) {
+            auto plugin = Vst2Format::create(*synths[0], 48000.0, 512, error);
+            EXPECT(plugin != nullptr && plugin->acceptsMidi());
+            if (plugin != nullptr) {
+                fdm::Engine engine;
+                engine.prepare(48000.0, 512);
+                engine.bpm.set(120.0f);                                  // 25 samples per tick
+                PluginInstrument instrument(std::move(plugin));
+                instrument.prepare(48000.0, 512);
+                const int ch = engine.addChannel(fdm::InstrumentType::PolySynth);
+                engine.channel(ch).external.store(&instrument);
+                auto& clip = engine.channel(ch).clips[0];
+                clip.create(1);
+                fdm::NoteEvent n;
+                n.pitch = 60;
+                n.start = fdm::kTicksPerBeat + 7;                        // frame 24000 + 175 = 24175, mid-block
+                n.length = fdm::kTicksPerStep;                           // 6000 frames
+                clip.addNote(n);
+                engine.channel(ch).addPlacement({0, fdm::kTicksPerBar, 0});
+                std::vector<float> L, R;
+                engine.renderOffline(fdm::Engine::kRenderArrangement, 1, 0.0f, L, R);
+                int first = -1, last = -1;
+                for (int i = 0; i < static_cast<int>(L.size()); ++i)
+                    if (std::abs(L[static_cast<size_t>(i)]) > 0.01f) { if (first < 0) first = i; last = i; }
+                std::printf("    note sounds from frame %d to %d\n", first, last);
+                EXPECT(first == 24175);
+                EXPECT(std::abs(last - (24175 + 6000 - 1)) <= 1);
+                engine.channel(ch).external.store(nullptr);
+            }
+        }
     }
 
     std::printf(failures == 0 ? "VST2 host: all checks passed\n" : "VST2 host: %d check(s) failed\n", failures);

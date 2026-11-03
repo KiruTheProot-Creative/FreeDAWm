@@ -24,6 +24,10 @@ class InstrumentCard : public juce::Component {
 public:
     InstrumentCard(AppState& app, fdm::Channel& channel) : channel_(channel) {
         (void)app;
+        loadPlugin_.setButtonText("Load plugin...");
+        loadPlugin_.setTooltip("Replace this temporary instrument with an instrument plugin (VST3 / VST2)");
+        loadPlugin_.onClick = [this] { if (onLoadPlugin) onLoadPlugin(&loadPlugin_); };
+        addAndMakeVisible(loadPlugin_);
         colour_ = theme::channelColour(channel.colorIndex.load());
         drum_ = channel.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack);
         auto& params = channel.instrument().params();
@@ -56,11 +60,15 @@ public:
 
     int preferredWidth() const { return drum_ ? 420 : 12 + 10 * 60 + 12; }
 
+    /** "Load instrument plugin..." in the card's title bar. */
+    std::function<void(juce::Component*)> onLoadPlugin;
+
     void paint(juce::Graphics& g) override {
         devices::paintCard(g, getLocalBounds(), juce::String(channel_.instrument().name()), colour_);
     }
 
     void resized() override {
+        loadPlugin_.setBounds(getWidth() - 130, 8, 118, 22);
         auto r = getLocalBounds().reduced(8, 0);
         r.removeFromTop(32);
         r.removeFromBottom(6);
@@ -110,6 +118,76 @@ private:
     std::vector<std::unique_ptr<juce::TextButton>> padButtons_;
     std::vector<std::string> padSuffixes_;
     std::unique_ptr<ParamKnob> masterKnob_;
+    juce::TextButton loadPlugin_;
+};
+
+/** Instrument picker shared by both instrument cards. */
+inline void showInstrumentMenu(AppState& app, int channel, juce::Component* target) {
+    const auto list = app.pluginHost->availableInstruments();
+    juce::PopupMenu m;
+    if (list.isEmpty()) m.addItem(-1, "No instrument plugins found yet", false);
+    for (int i = 0; i < list.size(); ++i)
+        m.addItem(i + 1, list[i].name + (list[i].manufacturerName.isNotEmpty() ? "   (" + list[i].manufacturerName + ")" : juce::String())
+                             + (list[i].pluginFormatName == "VST3" ? juce::String() : "  [" + list[i].pluginFormatName + "]"));
+    m.addSeparator();
+    m.addItem(1000, "Scan for plugins...");
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(target), [&app, channel, list](int id) {
+        if (id == 1000) { app.pluginHost->scanAsync([&app](int) { app.structureHasChanged(); }); return; }
+        if (id <= 0 || id > list.size()) return;
+        const auto error = app.loadInstrument(channel, list[id - 1]);
+        if (error.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Couldn't load instrument", error);
+        else if (app.prefs->getBool("openEditorOnLoad")) app.showInstrumentEditor(channel);
+    });
+}
+
+/** A hosted instrument plugin on a MIDI track. */
+class PluginInstrumentCard : public juce::Component {
+public:
+    PluginInstrumentCard(AppState& app, int channel) : app_(app), channel_(channel) {
+        colour_ = theme::channelColour(app.engine.channel(channel).colorIndex.load());
+        edit_.setButtonText("Open editor");
+        edit_.onClick = [this] { app_.showInstrumentEditor(channel_); };
+        replace_.setButtonText("Replace...");
+        replace_.onClick = [this] { showInstrumentMenu(app_, channel_, &replace_); };
+        remove_.setButtonText("Remove");
+        remove_.setTooltip("Go back to the temporary built-in instrument");
+        remove_.onClick = [this] {
+            const int ch = channel_;
+            juce::MessageManager::callAsync([&app = app_, ch] { app.clearInstrument(ch); });
+        };
+        for (auto* b : {&edit_, &replace_, &remove_}) addAndMakeVisible(*b);
+    }
+
+    int preferredWidth() const { return 300; }
+
+    void paint(juce::Graphics& g) override {
+        auto* inst = app_.instrumentAt(channel_);
+        if (inst == nullptr) return;
+        const auto desc = inst->plugin().getPluginDescription();
+        devices::paintCard(g, getLocalBounds(), desc.name, colour_);
+        g.setColour(theme::textDim);
+        g.setFont(theme::labelFont(11.0f, false));
+        juce::String info = desc.pluginFormatName + " instrument";
+        if (desc.manufacturerName.isNotEmpty()) info += "\n" + desc.manufacturerName;
+        info += "\n" + juce::String(inst->plugin().getParameters().size()) + " parameters";
+        g.drawFittedText(info, getLocalBounds().reduced(14, 0).withTrimmedTop(40).withHeight(60), juce::Justification::topLeft, 4);
+    }
+
+    void resized() override {
+        auto r = getLocalBounds().reduced(12, 0);
+        r.removeFromTop(108);
+        edit_.setBounds(r.removeFromTop(30));
+        r.removeFromTop(6);
+        auto row = r.removeFromTop(28);
+        replace_.setBounds(row.removeFromLeft(row.getWidth() / 2).withTrimmedRight(3));
+        remove_.setBounds(row.withTrimmedLeft(3));
+    }
+
+private:
+    AppState& app_;
+    int channel_;
+    juce::Colour colour_;
+    juce::TextButton edit_, replace_, remove_;
 };
 
 /** One FX slot: empty (click to add), or a loaded VST3 with bypass / edit / remove. */
@@ -243,7 +321,17 @@ private:
         title_.setText(juce::String(strip->name), juce::dontSendNotification);
 
         if (auto* ch = app_.selectedChannel(); ch != nullptr && !ch->isAudio()) {
-            instrument_ = std::make_unique<InstrumentCard>(app_, *ch);
+            const int index = app_.selection().index;
+            if (app_.instrumentAt(index) != nullptr) {
+                auto card = std::make_unique<PluginInstrumentCard>(app_, index);
+                instrumentWidth_ = card->preferredWidth();
+                instrument_ = std::move(card);
+            } else {
+                auto card = std::make_unique<InstrumentCard>(app_, *ch);
+                instrumentWidth_ = card->preferredWidth();
+                card->onLoadPlugin = [this, index](juce::Component* target) { showInstrumentMenu(app_, index, target); };
+                instrument_ = std::move(card);
+            }
             content_.addAndMakeVisible(*instrument_);
         }
         // Every loaded effect in chain order, then one empty card to add another.
@@ -263,7 +351,7 @@ private:
     void layoutCards() {
         const int h = std::max(120, viewport_.getMaximumVisibleHeight());
         int x = 0;
-        if (instrument_) { const int w = instrument_->preferredWidth(); instrument_->setBounds(x, 0, w, h); x += w + 6; }
+        if (instrument_) { instrument_->setBounds(x, 0, instrumentWidth_, h); x += instrumentWidth_ + 6; }
         for (auto& f : fx_) { f->setBounds(x, 0, 170, h); x += 176; }
         content_.setSize(std::max(x, viewport_.getMaximumVisibleWidth()), h);
     }
@@ -274,6 +362,7 @@ private:
     juce::Label title_;
     juce::Viewport viewport_;
     Content content_;
-    std::unique_ptr<InstrumentCard> instrument_;
+    std::unique_ptr<juce::Component> instrument_;
+    int instrumentWidth_ = 0;
     std::vector<std::unique_ptr<FxCard>> fx_;
 };

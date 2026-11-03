@@ -20,6 +20,12 @@ public:
 
     virtual ParamList& params() = 0;
     virtual const char* name() const = 0;
+
+    /** Block-based instruments (hosted plugins) are rendered once per engine block instead of
+        between every tick. They receive note calls first, each preceded by setBlockOffset() with the
+        sample position inside the coming render() call where the note belongs. */
+    virtual bool wantsWholeBlocks() const { return false; }
+    virtual void setBlockOffset(int /*frame*/) {}
 };
 
 }  // namespace fdm

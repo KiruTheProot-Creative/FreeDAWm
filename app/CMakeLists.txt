@@ -46,7 +46,7 @@ add_custom_command(TARGET FreeDAWm POST_BUILD
 
 # ---- clean-room VST2 host test: a tiny VST2 plugin + a console app that loads it ----
 if(FDM_BUILD_TESTS)
-    foreach(variant plain shell crash hang)
+    foreach(variant plain shell crash hang synth)
         add_library(fdm_test_vst2_${variant} MODULE tests/TestVst2Plugin.cpp)
         set_target_properties(fdm_test_vst2_${variant} PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden)
         target_compile_features(fdm_test_vst2_${variant} PRIVATE cxx_std_17)
@@ -57,18 +57,22 @@ if(FDM_BUILD_TESTS)
     target_compile_definitions(fdm_test_vst2_shell PRIVATE FDM_TEST_SHELL=1)
     target_compile_definitions(fdm_test_vst2_crash PRIVATE FDM_TEST_CRASH=1)
     target_compile_definitions(fdm_test_vst2_hang PRIVATE FDM_TEST_HANG=1)
+    target_compile_definitions(fdm_test_vst2_synth PRIVATE FDM_TEST_SYNTH=1)
 
     juce_add_console_app(fdm_vst2_host_test PRODUCT_NAME "fdm_vst2_host_test")
     target_sources(fdm_vst2_host_test PRIVATE tests/Vst2HostTest.cpp Source/vst2/Vst2Format.cpp Source/PluginScanner.cpp)
     target_compile_definitions(fdm_vst2_host_test PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=0)
-    target_link_libraries(fdm_vst2_host_test PRIVATE juce::juce_audio_processors juce::juce_audio_utils juce::juce_gui_basics
+    target_link_libraries(fdm_vst2_host_test PRIVATE fdm::core juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices juce::juce_audio_formats
+                          juce::juce_gui_basics juce::juce_gui_extra
                           PUBLIC juce::juce_recommended_config_flags)
-    add_dependencies(fdm_vst2_host_test fdm_test_vst2_plain fdm_test_vst2_shell fdm_test_vst2_crash fdm_test_vst2_hang)
+    add_dependencies(fdm_vst2_host_test fdm_test_vst2_plain fdm_test_vst2_shell fdm_test_vst2_crash fdm_test_vst2_hang fdm_test_vst2_synth)
     if(APPLE)
         add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_BUNDLE_DIR:fdm_test_vst2_plain> $<TARGET_BUNDLE_DIR:fdm_test_vst2_shell>
-                 $<TARGET_BUNDLE_DIR:fdm_test_vst2_crash> $<TARGET_BUNDLE_DIR:fdm_test_vst2_hang>)
+                 $<TARGET_BUNDLE_DIR:fdm_test_vst2_crash> $<TARGET_BUNDLE_DIR:fdm_test_vst2_hang>
+                 $<TARGET_BUNDLE_DIR:fdm_test_vst2_synth>)
     else()
         add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_FILE:fdm_test_vst2_plain> $<TARGET_FILE:fdm_test_vst2_shell>
-                 $<TARGET_FILE:fdm_test_vst2_crash> $<TARGET_FILE:fdm_test_vst2_hang>)
+                 $<TARGET_FILE:fdm_test_vst2_crash> $<TARGET_FILE:fdm_test_vst2_hang>
+                 $<TARGET_FILE:fdm_test_vst2_synth>)
     endif()
 endif()

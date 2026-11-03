@@ -117,6 +117,8 @@ private:
     void releaseAllChannels();
     void triggerNotes(Channel& ch, Clip& clip, int local, int len, IInstrument& inst);
     void renderInstruments(int pos, int count, double tickPos, bool timeline);
+    void setBlockOffsets(int frame);
+    void renderWholeBlocks(int n);
     void renderAudioClips(Channel& ch, float* L, float* R, int count, double tickPos);
     void mix(float* outL, float* outR, int n);
     void processStrip(Strip& s, float* L, float* R, int n, bool audible, bool meter = true);
