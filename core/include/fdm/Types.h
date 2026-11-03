@@ -25,7 +25,7 @@ constexpr int kNumReturns      = 2;    // return channels (A, B)
 constexpr int kMaxScenes       = 8;    // clip slots per channel
 constexpr int kMaxNotesPerClip = 512;
 constexpr int kMaxClipBars     = 16;
-constexpr int kMaxFxSlots      = 4;    // effect slots per channel / return / master
+constexpr int kMaxFxSlots      = 64;   // effect slots per channel / return / master (empty slots cost nothing)
 constexpr int kMaxBlockSize    = 4096;
 
 constexpr float kPi    = 3.14159265358979323846f;

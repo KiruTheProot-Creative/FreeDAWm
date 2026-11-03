@@ -369,6 +369,16 @@ TEST(swap_effect_returns_the_old_effect_and_can_clear_a_slot) {
     CHECK_NEAR(f.settle().l[100], 0.25, 1e-4);
 }
 
+TEST(fx_chain_is_not_limited_to_four_effects) {
+    MixFixture f;
+    f.e.channel(f.c1).mute.store(true);
+    const double before = f.settle().l[100];
+    // Fill every slot with a 0.99x gain, including the last: all of them must run, in order.
+    for (int s = 0; s < kMaxFxSlots; ++s) f.e.swapEffect(f.e.channel(f.c0).fx[static_cast<size_t>(s)], std::make_unique<TestGain>(0.99f));
+    CHECK(kMaxFxSlots >= 32);
+    CHECK_NEAR(f.settle().l[100], before * std::pow(0.99, kMaxFxSlots), 1e-4);
+}
+
 TEST(master_strip_has_an_fx_chain_and_fader) {
     MixFixture f;
     f.e.master().volumeDb.store(-6.0206f);

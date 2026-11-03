@@ -115,7 +115,7 @@ private:
 /** One FX slot: empty (click to add), or a loaded VST3 with bypass / edit / remove. */
 class FxCard : public juce::Component {
 public:
-    FxCard(AppState& app, fdm::Strip& strip, int slot) : app_(app), strip_(strip), slot_(slot) {
+    FxCard(AppState& app, fdm::Strip& strip, int slot, int number) : app_(app), strip_(strip), slot_(slot), number_(number) {
         effect_ = app_.effectAt(strip_, slot_);
         if (effect_ != nullptr) {
             power_ = std::make_unique<IconButton>(IconButton::Icon::Power, theme::play);
@@ -151,7 +151,7 @@ public:
             g.fillPath(dashed);
             g.setColour(theme::textDim);
             g.setFont(juce::Font(juce::FontOptions(12.0f)));
-            g.drawText("FX " + juce::String(slot_ + 1), r.toNearestInt().withTrimmedBottom(20), juce::Justification::centred);
+            g.drawText("FX " + juce::String(number_), r.toNearestInt().withTrimmedBottom(20), juce::Justification::centred);
             g.drawText("+ Add effect", r.toNearestInt().withTrimmedTop(20), juce::Justification::centred);
         }
     }
@@ -197,7 +197,7 @@ private:
 
     AppState& app_;
     fdm::Strip& strip_;
-    int slot_;
+    int slot_, number_;
     Vst3Effect* effect_ = nullptr;
     std::unique_ptr<IconButton> power_, edit_, remove_;
 };
@@ -244,8 +244,15 @@ private:
             instrument_ = std::make_unique<InstrumentCard>(app_, *ch);
             content_.addAndMakeVisible(*instrument_);
         }
+        // Every loaded effect in chain order, then one empty card to add another.
+        int number = 0;
         for (int s = 0; s < fdm::kMaxFxSlots; ++s) {
-            fx_.push_back(std::make_unique<FxCard>(app_, *strip, s));
+            if (app_.effectAt(*strip, s) == nullptr) continue;
+            fx_.push_back(std::make_unique<FxCard>(app_, *strip, s, ++number));
+            content_.addAndMakeVisible(*fx_.back());
+        }
+        if (const int free = app_.nextFreeFxSlot(*strip); free >= 0) {
+            fx_.push_back(std::make_unique<FxCard>(app_, *strip, free, number + 1));
             content_.addAndMakeVisible(*fx_.back());
         }
         layoutCards();

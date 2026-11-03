@@ -48,6 +48,9 @@ public:
                             const juce::MemoryBlock* savedState = nullptr);
     void         clearEffect(fdm::Strip& strip, int slot);
     Vst3Effect*  effectAt(fdm::Strip& strip, int slot);
+    /** Slot for a new effect at the end of the chain (fills a gap only when the end is full); -1 if none. */
+    int          nextFreeFxSlot(fdm::Strip& strip);
+    int          effectCount(fdm::Strip& strip);
     void         showEffectEditor(fdm::Strip& strip, int slot);
 
     // ---- live notes (computer keyboard, on-screen keys) -------------------------

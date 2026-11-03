@@ -81,9 +81,19 @@ public:
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override { load(row); }
     void listBoxItemClicked(int row, const juce::MouseEvent& e) override {
         if (!e.mods.isPopupMenu() || row < 0 || row >= getNumRows() || rows_[static_cast<size_t>(row)].header) return;
+        auto* strip = app_.selectedStrip();
+        if (strip == nullptr) return;
         juce::PopupMenu m;
-        for (int s = 0; s < fdm::kMaxFxSlots; ++s) m.addItem(s + 1, "Load into FX slot " + juce::String(s + 1));
-        m.showMenuAsync(juce::PopupMenu::Options(), [this, row](int id) { if (id > 0) load(row, id - 1); });
+        m.addItem(1000, "Add to end of chain");
+        juce::PopupMenu replace;
+        int number = 0;
+        for (int s = 0; s < fdm::kMaxFxSlots; ++s)
+            if (auto* fx = app_.effectAt(*strip, s)) replace.addItem(s + 1, "FX " + juce::String(++number) + ": " + juce::String(fx->name()));
+        m.addSubMenu("Replace", replace, replace.getNumItems() > 0);
+        m.showMenuAsync(juce::PopupMenu::Options(), [this, row](int id) {
+            if (id == 1000) load(row);
+            else if (id > 0) load(row, id - 1);
+        });
     }
 
 private:
@@ -97,13 +107,11 @@ private:
         if (row < 0 || row >= getNumRows() || rows_[static_cast<size_t>(row)].header) return;
         auto* strip = app_.selectedStrip();
         if (strip == nullptr) return;
-        int slot = forcedSlot;
-        if (slot < 0)
-            for (int s = 0; s < fdm::kMaxFxSlots; ++s)
-                if (app_.effectAt(*strip, s) == nullptr) { slot = s; break; }
+        const int slot = forcedSlot >= 0 ? forcedSlot : app_.nextFreeFxSlot(*strip);
         if (slot < 0) {
             juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Effect chain is full",
-                                                   "All 4 slots on \"" + juce::String(strip->name) + "\" are in use. Remove one first, or right-click the plugin to replace a slot.");
+                                                   "\"" + juce::String(strip->name) + "\" already has " + juce::String(fdm::kMaxFxSlots)
+                                                       + " effects. Remove one first, or right-click the plugin to replace one.");
             return;
         }
         const auto error = app_.loadEffect(*strip, slot, rows_[static_cast<size_t>(row)].desc);

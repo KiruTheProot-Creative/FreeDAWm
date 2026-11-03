@@ -152,6 +152,22 @@ Vst3Effect* AppState::effectAt(fdm::Strip& strip, int slot) {
     return dynamic_cast<Vst3Effect*>(strip.fx[static_cast<size_t>(slot)].effect.load());
 }
 
+int AppState::nextFreeFxSlot(fdm::Strip& strip) {
+    int last = -1;
+    for (int s = 0; s < fdm::kMaxFxSlots; ++s)
+        if (strip.fx[static_cast<size_t>(s)].effect.load() != nullptr) last = s;
+    if (last + 1 < fdm::kMaxFxSlots) return last + 1;
+    for (int s = 0; s < fdm::kMaxFxSlots; ++s)
+        if (strip.fx[static_cast<size_t>(s)].effect.load() == nullptr) return s;
+    return -1;
+}
+
+int AppState::effectCount(fdm::Strip& strip) {
+    int n = 0;
+    for (auto& slot : strip.fx) n += slot.effect.load() != nullptr ? 1 : 0;
+    return n;
+}
+
 juce::String AppState::loadEffect(fdm::Strip& strip, int slot, const juce::PluginDescription& description,
                                   const juce::MemoryBlock* savedState) {
     if (slot < 0 || slot >= fdm::kMaxFxSlots) return "Invalid slot.";
