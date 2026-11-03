@@ -114,14 +114,18 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// The lanes: one row per channel, clips as draggable blocks
+// The lanes: one row per track. MIDI tracks hold clips, audio tracks hold sound files.
 // ---------------------------------------------------------------------------
-class TimelineLanes : public juce::Component {
+class TimelineLanes : public juce::Component, public juce::DragAndDropTarget, public juce::FileDragAndDropTarget {
 public:
     TimelineLanes(AppState& app, TimelineMetrics& m) : app_(app), m_(m) { setWantsKeyboardFocus(true); }
 
     std::function<void(int tab)> requestTab;
+    std::function<void()> onExtentChanged;        // clips moved or added: the scroll width may change
     std::vector<int> channels;                    // engine channel index per row
+
+    /** A MIDI placement or an audio clip, seen the same way by the editing code. */
+    struct Item { int start = 0, length = 0, ref = 0; };
 
     void paint(juce::Graphics& g) override {
         const auto clipB = g.getClipBounds();
@@ -132,13 +136,12 @@ public:
             const int y = r * theme::kTrackHeight;
             if (y > clipB.getBottom() || y + theme::kTrackHeight < clipB.getY()) continue;
             const bool selected = app_.selection().kind == AppState::Selection::Kind::Channel && app_.selection().index == channels[static_cast<size_t>(r)];
-            g.setColour(selected ? theme::panel.brighter(0.05f).withAlpha(1.0f) : (r % 2 ? theme::panel.darker(0.25f) : theme::panel.darker(0.45f)));
+            g.setColour(selected ? theme::panel.brighter(0.05f) : (r % 2 ? theme::panel.darker(0.25f) : theme::panel.darker(0.45f)));
             g.fillRect(0, y, getWidth(), theme::kTrackHeight);
             g.setColour(juce::Colours::black);
             g.drawHorizontalLine(y + theme::kTrackHeight - 1, 0.0f, static_cast<float>(getWidth()));
         }
 
-        // loop region
         if (app_.engine.loopEnabled.load()) {
             const int a = m_.tickToX(app_.engine.loopStartTick.load()), b = m_.tickToX(app_.engine.loopEndTick.load());
             g.setColour(theme::accent.withAlpha(0.07f));
@@ -148,7 +151,6 @@ public:
             g.drawVerticalLine(b, 0.0f, static_cast<float>(getHeight()));
         }
 
-        // grid
         const int firstBar = std::max(0, static_cast<int>(m_.xToTick(clipB.getX()) / fdm::kTicksPerBar));
         const int lastBar = std::min(m_.totalBars, static_cast<int>(m_.xToTick(clipB.getRight()) / fdm::kTicksPerBar) + 1);
         for (int bar = firstBar; bar <= lastBar; ++bar) {
@@ -162,72 +164,62 @@ public:
                 }
         }
 
-        // clips
         for (int r = 0; r < rows; ++r) {
             auto& ch = app_.engine.channel(channels[static_cast<size_t>(r)]);
             for (int i = 0; i < fdm::kMaxPlacements; ++i) {
-                fdm::Placement p;
-                if (!ch.getPlacement(i, p)) continue;
-                const auto rect = placementRect(r, p);
+                Item it;
+                if (!getItem(ch, i, it)) continue;
+                const auto rect = itemRect(r, it);
                 if (!rect.toNearestInt().intersects(clipB)) continue;
-                paintClip(g, ch, p, rect, selChannel_ == channels[static_cast<size_t>(r)] && selIndex_ == i);
+                const bool sel = selChannel_ == channels[static_cast<size_t>(r)] && selIndex_ == i;
+                if (ch.isAudio()) paintAudioClip(g, ch, it, rect, sel);
+                else paintMidiClip(g, ch, it, rect, sel);
             }
         }
 
-        // playhead
+        if (dropRow_ >= 0) {                                       // drag-and-drop ghost
+            const int y = dropRow_ * theme::kTrackHeight;
+            const int x = m_.tickToX(dropTick_);
+            g.setColour(theme::accentHi.withAlpha(0.25f));
+            g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::kTrackHeight - 6), 3.0f);
+            g.setColour(theme::accentHi);
+            g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::kTrackHeight - 6), 3.0f, 1.5f);
+            g.setFont(theme::labelFont(10.5f));
+            g.drawText(dropRow_ >= rows ? "NEW AUDIO TRACK" : "DROP HERE", x + 6, y + 6, 110, 14, juce::Justification::centredLeft);
+        }
+
         const int px = m_.tickToX(app_.engine.positionTicks());
         g.setColour(theme::accentHi);
         g.drawVerticalLine(px, 0.0f, static_cast<float>(getHeight()));
     }
 
-    // ---- hit testing --------------------------------------------------------------
-    juce::Rectangle<float> placementRect(int row, const fdm::Placement& p) const {
-        const float x = static_cast<float>(m_.tickToX(p.startTick));
-        const float w = std::max(4.0f, static_cast<float>(m_.tickToX(static_cast<int64_t>(p.startTick) + p.lengthTicks)) - x);
-        return {x, static_cast<float>(row * theme::kTrackHeight + 3), w, static_cast<float>(theme::kTrackHeight - 6)};
-    }
-
-    bool findPlacement(int row, int x, int& index, fdm::Placement& out) const {
-        if (row < 0 || row >= static_cast<int>(channels.size())) return false;
-        auto& ch = app_.engine.channel(channels[static_cast<size_t>(row)]);
-        bool found = false;
-        for (int i = 0; i < fdm::kMaxPlacements; ++i) {
-            fdm::Placement p;
-            if (!ch.getPlacement(i, p)) continue;
-            const auto r = placementRect(row, p);
-            if (x >= r.getX() && x <= r.getRight() && (!found || p.startTick >= out.startTick)) { index = i; out = p; found = true; }
-        }
-        return found;
-    }
-
-    // ---- mouse --------------------------------------------------------------------
+    // ---- mouse ---------------------------------------------------------------------
     void mouseDown(const juce::MouseEvent& e) override {
         grabKeyboardFocus();
         const int row = e.y / theme::kTrackHeight;
         if (row < 0 || row >= static_cast<int>(channels.size())) return;
         const int channel = channels[static_cast<size_t>(row)];
+        auto& ch = app_.engine.channel(channel);
         int index = -1;
-        fdm::Placement p;
-        const bool hit = findPlacement(row, e.x, index, p);
+        Item it;
+        const bool hit = findItem(row, e.x, index, it);
         drag_ = Drag::None;
 
         if (e.mods.isPopupMenu()) {
-            if (hit) select(channel, index, p.slot);
+            if (hit) select(channel, index, ch.isAudio() ? app_.selection().scene : it.ref);
             else app_.selectChannel(channel, app_.selection().scene);
-            showMenu(row, hit, index, p, e.x);
+            showMenu(row, hit, index, it, e.x);
             return;
         }
 
         if (hit) {
-            select(channel, index, p.slot);
-            original_ = p;
-            const auto r = placementRect(row, p);
-            drag_ = e.x > r.getRight() - 7.0f ? Drag::Resize : Drag::Move;
-            grab_ = m_.xToTick(e.x) - p.startTick;
-            if (requestTab) requestTab(0);
+            select(channel, index, ch.isAudio() ? app_.selection().scene : it.ref);
+            original_ = it;
+            drag_ = e.x > itemRect(row, it).getRight() - 7.0f ? Drag::Resize : Drag::Move;
+            grab_ = m_.xToTick(e.x) - it.start;
+            if (requestTab && !ch.isAudio()) requestTab(0);
         } else {
-            selChannel_ = -1;
-            selIndex_ = -1;
+            selChannel_ = selIndex_ = -1;
             app_.selectChannel(channel, app_.selection().scene);
             app_.engine.setPlayhead(m_.snap(m_.xToTick(e.x), m_.snapTicks(e.mods.isAltDown())));
         }
@@ -237,23 +229,26 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override {
         const int row = e.y / theme::kTrackHeight;
         if (row < 0 || row >= static_cast<int>(channels.size()) || e.mods.isPopupMenu()) return;
-        int index; fdm::Placement p;
-        if (findPlacement(row, e.x, index, p)) return;
-        createClipAt(row, m_.snapDown(m_.xToTick(e.x), fdm::kTicksPerBar));
+        int index; Item it;
+        if (findItem(row, e.x, index, it)) return;
+        const int64_t at = m_.snapDown(m_.xToTick(e.x), fdm::kTicksPerBar);
+        if (app_.engine.channel(channels[static_cast<size_t>(row)]).isAudio()) importAt(row, at);
+        else createClipAt(row, at);
     }
 
     void mouseDrag(const juce::MouseEvent& e) override {
         if (drag_ == Drag::None || selChannel_ < 0) return;
         auto& ch = app_.engine.channel(selChannel_);
-        fdm::Placement p = original_;
+        Item it = original_;
         const int grid = m_.snapTicks(e.mods.isAltDown());
         if (drag_ == Drag::Move) {
-            p.startTick = static_cast<int>(std::max<int64_t>(0, m_.snap(m_.xToTick(e.x) - grab_, grid)));
+            it.start = static_cast<int>(std::max<int64_t>(0, m_.snap(m_.xToTick(e.x) - grab_, grid)));
         } else {
             const int64_t end = m_.snap(m_.xToTick(e.x), grid);
-            p.lengthTicks = static_cast<int>(std::max<int64_t>(fdm::kTicksPerStep, end - p.startTick));
+            it.length = static_cast<int>(std::max<int64_t>(fdm::kTicksPerStep, end - it.start));
+            if (ch.isAudio()) it.length = std::min(it.length, app_.sampleLengthTicks(it.ref));     // audio can be shortened, not stretched
         }
-        ch.setPlacement(selIndex_, p);
+        setItem(ch, selIndex_, it);
         repaint();
     }
 
@@ -264,9 +259,9 @@ public:
 
     void mouseMove(const juce::MouseEvent& e) override {
         const int row = e.y / theme::kTrackHeight;
-        int index; fdm::Placement p;
+        int index; Item it;
         bool resize = false;
-        if (findPlacement(row, e.x, index, p)) resize = e.x > placementRect(row, p).getRight() - 7.0f;
+        if (findItem(row, e.x, index, it)) resize = e.x > itemRect(row, it).getRight() - 7.0f;
         setMouseCursor(resize ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
@@ -277,10 +272,68 @@ public:
         return false;
     }
 
-    std::function<void()> onExtentChanged;        // placements moved or added: the ruler/scroll width may change
+    // ---- drag and drop: samples from the explorer, files from the desktop ----------
+    bool isInterestedInDragSource(const SourceDetails& d) override { return d.description.toString() == "fdm-sample"; }
+    void itemDragMove(const SourceDetails& d) override { updateDrop(d.localPosition.toInt()); }
+    void itemDragExit(const SourceDetails&) override { clearDrop(); }
+    void itemDropped(const SourceDetails& d) override {
+        updateDrop(d.localPosition.toInt());
+        if (auto* tree = dynamic_cast<juce::FileTreeComponent*>(d.sourceComponent.get()))
+            dropFiles({tree->getSelectedFile().getFullPathName()});
+        clearDrop();
+    }
+
+    bool isInterestedInFileDrag(const juce::StringArray&) override { return true; }
+    void fileDragMove(const juce::StringArray&, int x, int y) override { updateDrop({x, y}); }
+    void fileDragExit(const juce::StringArray&) override { clearDrop(); }
+    void filesDropped(const juce::StringArray& files, int x, int y) override { updateDrop({x, y}); dropFiles(files); clearDrop(); }
 
 private:
     enum class Drag { None, Move, Resize };
+
+    // ---- items ----------------------------------------------------------------------
+    static bool getItem(fdm::Channel& ch, int i, Item& out) {
+        if (ch.isAudio()) {
+            fdm::AudioPlacement a;
+            if (!ch.getAudioClip(i, a)) return false;
+            out = {a.startTick, a.lengthTicks, a.sample};
+            return true;
+        }
+        fdm::Placement p;
+        if (!ch.getPlacement(i, p)) return false;
+        out = {p.startTick, p.lengthTicks, p.slot};
+        return true;
+    }
+    static void setItem(fdm::Channel& ch, int i, const Item& it) {
+        if (ch.isAudio()) ch.setAudioClip(i, {it.start, it.length, it.ref});
+        else ch.setPlacement(i, {it.start, it.length, it.ref});
+    }
+    static int addItem(fdm::Channel& ch, const Item& it) {
+        return ch.isAudio() ? ch.addAudioClip({it.start, it.length, it.ref}) : ch.addPlacement({it.start, it.length, it.ref});
+    }
+    static void removeItem(fdm::Channel& ch, int i) {
+        if (ch.isAudio()) ch.removeAudioClip(i);
+        else ch.removePlacement(i);
+    }
+
+    juce::Rectangle<float> itemRect(int row, const Item& it) const {
+        const float x = static_cast<float>(m_.tickToX(it.start));
+        const float w = std::max(4.0f, static_cast<float>(m_.tickToX(static_cast<int64_t>(it.start) + it.length)) - x);
+        return {x, static_cast<float>(row * theme::kTrackHeight + 3), w, static_cast<float>(theme::kTrackHeight - 6)};
+    }
+
+    bool findItem(int row, int x, int& index, Item& out) const {
+        if (row < 0 || row >= static_cast<int>(channels.size())) return false;
+        auto& ch = app_.engine.channel(channels[static_cast<size_t>(row)]);
+        bool found = false;
+        for (int i = 0; i < fdm::kMaxPlacements; ++i) {
+            Item it;
+            if (!getItem(ch, i, it)) continue;
+            const auto r = itemRect(row, it);
+            if (x >= r.getX() && x <= r.getRight() && (!found || it.start >= out.start)) { index = i; out = it; found = true; }
+        }
+        return found;
+    }
 
     void select(int channel, int index, int slot) {
         selChannel_ = channel;
@@ -288,28 +341,38 @@ private:
         app_.selectChannel(channel, slot);
     }
 
-    void paintClip(juce::Graphics& g, fdm::Channel& ch, const fdm::Placement& p, juce::Rectangle<float> r, bool selected) {
-        auto& clip = ch.clips[static_cast<size_t>(p.slot)];
-        const auto colour = theme::channelColour(ch.colorIndex.load());
-        const bool playing = ch.playingSlot.load() == p.slot && app_.engine.isPlaying() && app_.engine.arrangementMode.load()
-                             && app_.engine.positionTicks() >= p.startTick && app_.engine.positionTicks() < static_cast<int64_t>(p.startTick) + p.lengthTicks;
+    // ---- painting -------------------------------------------------------------------
+    void paintFrame(juce::Graphics& g, juce::Colour colour, const juce::String& title, juce::Rectangle<float> r, bool selected, bool playing) {
         g.setColour(colour.withMultipliedBrightness(playing ? 0.62f : 0.5f));
         g.fillRoundedRectangle(r, 3.0f);
-
-        // title strip
-        auto title = r.withHeight(15.0f);
+        auto strip = r.withHeight(15.0f);
         g.setColour(colour.withMultipliedBrightness(0.95f));
-        g.fillRoundedRectangle(title, 3.0f);
-        g.fillRect(title.withTop(title.getCentreY()));
+        g.fillRoundedRectangle(strip, 3.0f);
+        g.fillRect(strip.withTop(strip.getCentreY()));
         g.setColour(juce::Colours::black.withAlpha(0.85f));
         g.setFont(theme::labelFont(10.5f));
-        g.drawText(juce::String(clip.name).isEmpty() ? "Clip" : juce::String(clip.name), title.toNearestInt().reduced(5, 0), juce::Justification::centredLeft, true);
+        g.drawText(title, strip.toNearestInt().reduced(5, 0), juce::Justification::centredLeft, true);
+        juce::ignoreUnused(selected);
+    }
 
-        // notes (the clip repeats to fill the placement)
+    void paintBorder(juce::Graphics& g, juce::Rectangle<float> r, bool selected) {
+        g.setColour(selected ? theme::text : juce::Colours::black.withAlpha(0.8f));
+        g.drawRoundedRectangle(r, 3.0f, selected ? 1.8f : 1.0f);
+    }
+
+    bool isUnderPlayhead(const Item& it) const {
+        const auto pos = app_.engine.positionTicks();
+        return app_.engine.isPlaying() && pos >= it.start && pos < static_cast<int64_t>(it.start) + it.length;
+    }
+
+    void paintMidiClip(juce::Graphics& g, fdm::Channel& ch, const Item& p, juce::Rectangle<float> r, bool selected) {
+        auto& clip = ch.clips[static_cast<size_t>(p.ref)];
+        const auto colour = theme::channelColour(ch.colorIndex.load());
+        paintFrame(g, colour, juce::String(clip.name).isEmpty() ? juce::String("Clip") : juce::String(clip.name), r, selected, isUnderPlayhead(p));
+
         const int clipLen = std::max(1, clip.lengthTicks.load());
-        int lo = 127, hi = 0;
+        int lo = 127, hi = 0, n = 0;
         std::array<fdm::NoteEvent, fdm::kMaxNotesPerClip> notes;
-        int n = 0;
         for (int i = 0; i < fdm::kMaxNotesPerClip; ++i) {
             fdm::NoteEvent e;
             if (clip.getNote(i, e)) { notes[static_cast<size_t>(n++)] = e; lo = std::min(lo, e.pitch); hi = std::max(hi, e.pitch); }
@@ -317,27 +380,56 @@ private:
         auto body = r.withTrimmedTop(17.0f).reduced(0.0f, 3.0f);
         if (n > 0) {
             const float rowH = std::min(5.0f, body.getHeight() / static_cast<float>(hi - lo + 1));
-            const float mid = body.getCentreY() - rowH * 0.5f * static_cast<float>(hi - lo + 1) + 0.0f;
+            const float top = body.getCentreY() - rowH * 0.5f * static_cast<float>(hi - lo + 1);
             g.saveState();
             g.reduceClipRegion(r.toNearestInt());
-            g.setColour(juce::Colours::white.withAlpha(0.85f));
-            for (int off = 0; off < p.lengthTicks; off += clipLen) {
-                if (off > 0) { g.setColour(juce::Colours::black.withAlpha(0.35f)); g.drawVerticalLine(m_.tickToX(static_cast<int64_t>(p.startTick) + off), r.getY() + 16.0f, r.getBottom()); g.setColour(juce::Colours::white.withAlpha(0.85f)); }
+            for (int off = 0; off < p.length; off += clipLen) {
+                if (off > 0) {
+                    g.setColour(juce::Colours::black.withAlpha(0.35f));
+                    g.drawVerticalLine(m_.tickToX(static_cast<int64_t>(p.start) + off), r.getY() + 16.0f, r.getBottom());
+                }
+                g.setColour(juce::Colours::white.withAlpha(0.85f));
                 for (int i = 0; i < n; ++i) {
                     const auto& e = notes[static_cast<size_t>(i)];
-                    if (e.start >= clipLen || off + e.start >= p.lengthTicks) continue;
-                    const float x = static_cast<float>(m_.tickToX(static_cast<int64_t>(p.startTick) + off + e.start));
-                    const float w = std::max(1.5f, static_cast<float>(m_.tickToX(static_cast<int64_t>(p.startTick) + off + std::min(e.start + e.length, clipLen)) ) - static_cast<float>(m_.tickToX(static_cast<int64_t>(p.startTick) + off + e.start)));
-                    g.fillRect(x, mid + static_cast<float>(hi - e.pitch) * rowH, w, std::max(1.5f, rowH - 0.5f));
+                    if (e.start >= clipLen || off + e.start >= p.length) continue;
+                    const int64_t s0 = static_cast<int64_t>(p.start) + off + e.start;
+                    const int64_t s1 = static_cast<int64_t>(p.start) + off + std::min(e.start + e.length, clipLen);
+                    const float x = static_cast<float>(m_.tickToX(s0));
+                    const float w = std::max(1.5f, static_cast<float>(m_.tickToX(s1)) - x);
+                    g.fillRect(x, top + static_cast<float>(hi - e.pitch) * rowH, w, std::max(1.5f, rowH - 0.5f));
                 }
             }
             g.restoreState();
         }
-
-        g.setColour(selected ? theme::text : juce::Colours::black.withAlpha(0.8f));
-        g.drawRoundedRectangle(r, 3.0f, selected ? 1.8f : 1.0f);
+        paintBorder(g, r, selected);
     }
 
+    void paintAudioClip(juce::Graphics& g, fdm::Channel& ch, const Item& it, juce::Rectangle<float> r, bool selected) {
+        const auto* s = app_.engine.sample(it.ref);
+        const auto colour = theme::channelColour(ch.colorIndex.load());
+        paintFrame(g, colour, s != nullptr ? juce::String(s->name) : juce::String("(missing)"), r, selected, isUnderPlayhead(it));
+        if (s != nullptr && !s->peaks.empty()) {
+            auto body = r.withTrimmedTop(16.0f).reduced(0.0f, 2.0f);
+            const auto visible = body.getIntersection(g.getClipBounds().toFloat());
+            const double framesPerTick = s->sampleRate * 60.0 / (static_cast<double>(app_.engine.bpm.get()) * fdm::kPPQ);
+            const float mid = body.getCentreY(), half = body.getHeight() * 0.5f;
+            g.setColour(juce::Colours::white.withAlpha(0.8f));
+            for (int x = static_cast<int>(visible.getX()); x < static_cast<int>(visible.getRight()); ++x) {
+                const double t0 = static_cast<double>(m_.xToTick(x)) - it.start, t1 = static_cast<double>(m_.xToTick(x + 1)) - it.start;
+                if (t0 >= it.length) break;
+                const auto p0 = static_cast<size_t>(std::max(0.0, t0 * framesPerTick) / fdm::AudioSample::kPeakBlock);
+                const auto p1 = static_cast<size_t>(std::max(0.0, t1 * framesPerTick) / fdm::AudioSample::kPeakBlock);
+                if (p0 >= s->peaks.size()) break;
+                float peak = 0.0f;
+                for (size_t k = p0; k <= std::min(p1, s->peaks.size() - 1); ++k) peak = std::max(peak, s->peaks[k]);
+                const float h = std::max(0.5f, std::min(1.0f, peak) * half);
+                g.fillRect(static_cast<float>(x), mid - h, 1.0f, h * 2.0f);
+            }
+        }
+        paintBorder(g, r, selected);
+    }
+
+    // ---- editing --------------------------------------------------------------------
     void createClipAt(int row, int64_t startTick, int forcedSlot = -1) {
         auto& ch = app_.engine.channel(channels[static_cast<size_t>(row)]);
         int slot = forcedSlot;
@@ -365,9 +457,53 @@ private:
         repaint();
     }
 
+    void importAt(int row, int64_t startTick) {
+        const int channel = channels[static_cast<size_t>(row)];
+        chooser_ = std::make_unique<juce::FileChooser>("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this, channel, startTick, safe = juce::Component::SafePointer<TimelineLanes>(this)](const juce::FileChooser& fc) {
+                                  if (safe == nullptr || !fc.getResult().existsAsFile()) return;
+                                  const int idx = app_.addAudioClip(channel, fc.getResult(), startTick);
+                                  if (idx >= 0) select(channel, idx, app_.selection().scene);
+                                  if (onExtentChanged) onExtentChanged();
+                              });
+    }
+
+    void updateDrop(juce::Point<int> p) {
+        dropRow_ = std::max(0, p.y / theme::kTrackHeight);
+        if (dropRow_ < static_cast<int>(channels.size()) && !app_.engine.channel(channels[static_cast<size_t>(dropRow_)]).isAudio())
+            dropRow_ = -1;                                   // MIDI tracks don't take audio
+        dropTick_ = m_.snapDown(m_.xToTick(std::max(0, p.x)), m_.snapTicks(false));
+        repaint();
+    }
+    void clearDrop() { dropRow_ = -1; repaint(); }
+
+    void dropFiles(const juce::StringArray& files) {
+        if (dropRow_ < 0) return;
+        int channel;
+        if (dropRow_ < static_cast<int>(channels.size())) {
+            channel = channels[static_cast<size_t>(dropRow_)];
+        } else {
+            channel = app_.addChannel(fdm::InstrumentType::Audio);         // dropped below the last track
+            if (channel < 0) return;
+            app_.engine.channel(channel).setName(juce::File(files[0]).getFileNameWithoutExtension().substring(0, 30).toRawUTF8());
+        }
+        int64_t at = dropTick_;
+        for (auto& f : files) {                                            // several files go one after another
+            const juce::File file(f);
+            if (!file.existsAsFile()) continue;
+            const int idx = app_.addAudioClip(channel, file, at);
+            if (idx < 0) continue;
+            fdm::AudioPlacement a;
+            if (app_.engine.channel(channel).getAudioClip(idx, a)) at = a.startTick + a.lengthTicks;
+            select(channel, idx, app_.selection().scene);
+        }
+        if (onExtentChanged) onExtentChanged();
+    }
+
     void removeSelected() {
         if (selChannel_ < 0) return;
-        app_.engine.channel(selChannel_).removePlacement(selIndex_);
+        removeItem(app_.engine.channel(selChannel_), selIndex_);
         selChannel_ = selIndex_ = -1;
         if (onExtentChanged) onExtentChanged();
         repaint();
@@ -376,42 +512,44 @@ private:
     void duplicateSelected() {
         if (selChannel_ < 0) return;
         auto& ch = app_.engine.channel(selChannel_);
-        fdm::Placement p;
-        if (!ch.getPlacement(selIndex_, p)) return;
-        p.startTick += p.lengthTicks;
-        const int idx = ch.addPlacement(p);
+        Item it;
+        if (!getItem(ch, selIndex_, it)) return;
+        it.start += it.length;
+        const int idx = addItem(ch, it);
         if (idx >= 0) selIndex_ = idx;
         if (onExtentChanged) onExtentChanged();
         repaint();
     }
 
-    void makeUnique(int index, fdm::Placement p) {
+    void makeUnique(int index, Item it) {
         auto& ch = app_.engine.channel(selChannel_);
         int free = -1;
         for (int s = 0; s < fdm::kMaxScenes; ++s) if (!ch.clips[static_cast<size_t>(s)].exists.load()) { free = s; break; }
-        if (free < 0) { juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "No free clip slot", "All 8 clip slots on this track are in use."); return; }
-        auto& src = ch.clips[static_cast<size_t>(p.slot)];
+        if (free < 0) { juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "No free clip slot", "All 8 clips on this track are in use."); return; }
+        auto& src = ch.clips[static_cast<size_t>(it.ref)];
         auto& dst = ch.clips[static_cast<size_t>(free)];
         dst.create(1);
         dst.setLengthTicks(src.lengthTicks.load());
         std::snprintf(dst.name, sizeof(dst.name), "%.28s*", src.name);
         fdm::NoteEvent e;
         for (int i = 0; i < fdm::kMaxNotesPerClip; ++i) if (src.getNote(i, e)) dst.addNote(e);
-        p.slot = free;
-        ch.setPlacement(index, p);
+        it.ref = free;
+        setItem(ch, index, it);
         app_.selectChannel(selChannel_, free);
         app_.structureHasChanged();
         repaint();
     }
 
-    void showMenu(int row, bool hit, int index, fdm::Placement p, int x) {
+    void showMenu(int row, bool hit, int index, Item it, int x) {
         juce::PopupMenu m;
-        const int channel = channels[static_cast<size_t>(row)];
-        auto& ch = app_.engine.channel(channel);
+        auto& ch = app_.engine.channel(channels[static_cast<size_t>(row)]);
+        const bool audio = ch.isAudio();
         if (hit) {
             m.addItem(1, "Duplicate   (Ctrl+D)");
-            m.addItem(2, "Make clip unique");
+            if (!audio) m.addItem(2, "Make clip unique");
             m.addItem(3, "Delete   (Del)");
+        } else if (audio) {
+            m.addItem(11, "Import audio file here...");
         } else {
             m.addItem(10, "Create clip here");
             juce::PopupMenu insert;
@@ -421,12 +559,13 @@ private:
             m.addSubMenu("Insert clip", insert, insert.getNumItems() > 0);
         }
         const int64_t at = m_.snapDown(m_.xToTick(x), fdm::kTicksPerBar);
-        m.showMenuAsync(juce::PopupMenu::Options(), [this, safe = juce::Component::SafePointer<TimelineLanes>(this), row, index, p, at](int id) {
+        m.showMenuAsync(juce::PopupMenu::Options(), [this, safe = juce::Component::SafePointer<TimelineLanes>(this), row, index, it, at](int id) {
             if (safe == nullptr || id == 0) return;
             if (id == 1) duplicateSelected();
-            else if (id == 2) makeUnique(index, p);
+            else if (id == 2) makeUnique(index, it);
             else if (id == 3) removeSelected();
             else if (id == 10) createClipAt(row, at);
+            else if (id == 11) importAt(row, at);
             else if (id >= 20) createClipAt(row, at, id - 20);
         });
     }
@@ -435,8 +574,11 @@ private:
     TimelineMetrics& m_;
     int selChannel_ = -1, selIndex_ = -1;
     Drag drag_ = Drag::None;
-    fdm::Placement original_;
+    Item original_;
     int64_t grab_ = 0;
+    int dropRow_ = -1;
+    int64_t dropTick_ = 0;
+    std::unique_ptr<juce::FileChooser> chooser_;
 };
 
 // ---------------------------------------------------------------------------
@@ -502,7 +644,7 @@ public:
 
         g.setColour(theme::textDim);
         g.setFont(theme::labelFont(9.5f, false));
-        g.drawText(ch.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack) ? "DRUM RACK - TEMP" : "POLY SYNTH - TEMP",
+        g.drawText(ch.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack) ? "DRUM RACK - TEMP" : (ch.isAudio() ? "AUDIO" : "POLY SYNTH - TEMP"),
                    16, 22, getWidth() - 60, 12, juce::Justification::centredLeft);
 
         // meter
@@ -721,11 +863,13 @@ private:
 
     void showAddMenu() {
         juce::PopupMenu m;
-        m.addItem(1, "Drum Rack track  (placeholder instrument)");
-        m.addItem(2, "Synth track  (placeholder instrument)");
+        m.addItem(3, "Audio track");
+        m.addItem(1, "MIDI track  (temp drum rack)");
+        m.addItem(2, "MIDI track  (temp synth)");
         m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(addTrack_.get()), [this](int id) {
             if (id == 1) app_.addChannel(fdm::InstrumentType::DrumRack);
             else if (id == 2) app_.addChannel(fdm::InstrumentType::PolySynth);
+            else if (id == 3) app_.addChannel(fdm::InstrumentType::Audio);
         });
     }
 

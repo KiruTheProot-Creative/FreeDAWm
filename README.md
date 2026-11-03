@@ -3,16 +3,30 @@
 A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-making first.
 
 ## What works today
-- **Layout**: REAPER-style top transport and track lanes, an Ableton-style detail panel underneath, and an explorer sidebar on the left. Dark red look inspired by Emulon X.
-- **Arrangement timeline**: clips are placed on a bar ruler per track. Double-click a lane to create a clip, drag to move, drag the right edge to resize, Ctrl+D duplicates, Del deletes, right-click for more. Click or drag the ruler to move the playhead; drag the thin strip above it to set the loop region. Ctrl+wheel zooms.
-- **Bottom panel**: *Piano Roll* (step grid for drums, piano roll for synths), *FX Chain* (up to 64 VST3 effects per track, return and master; the chain grows as you add them) and *Session* (Ableton-style clip launcher and mixer). The ARRANGE / SESSION buttons choose what the transport plays.
-- **Explorer**: *VST* lists effects found in the `plugins/` folder (and any folders you add); double-click one to put it on the selected track. *Samples* browses your sample folders and previews files on click.
-- **Instruments**: a placeholder Drum Rack and Poly Synth so you can make sound for now. They will be replaced by hosted instrument plugins.
+- **Layout**: REAPER-style transport and track lanes on top, an Ableton-style detail panel underneath, and an explorer sidebar on the left. The dark red look is inspired by Emulon X.
+- **Arrangement timeline**: everything plays from the timeline.
+  - MIDI tracks: double-click a lane to create a clip.
+  - Audio tracks: drag a file from the Samples explorer (or your desktop) onto a lane. Dropping below the last track makes a new audio track. Double-click a lane to import a file.
+  - Clips: drag to move, drag the right edge to resize. Ctrl+D duplicates, Del deletes, right-click shows more.
+  - Ruler: click or drag to move the playhead. The thin strip above it sets the loop region.
+  - Ctrl+wheel zooms.
+- **Audio tracks**: play WAV, AIFF, FLAC, MP3 and OGG files at their own speed (no time-stretching yet). Any sample rate is resampled on the fly.
+- **Bottom panel**:
+  - *Piano Roll*: a step grid for drums, a piano roll for synths.
+  - *FX Chain*: up to 64 VST3 effects per track, return and master. The chain grows as you add them.
+  - *Mixer*: every track plus Return A/B and Master.
+- **Explorer**:
+  - *VST*: lists effects found in the `plugins/` folder (and any folders you add). Double-click one to add it to the selected track.
+  - *Samples*: browses your sample folders. Click to preview, drag onto the timeline.
+- **Instruments**: a temporary Drum Rack and Poly Synth so MIDI tracks make sound for now. They will be replaced by hosted instrument plugins.
 - **Plugins**: VST3 hosting only. No effects or instruments are built in. VST2 is not supported.
-- **Projects** (`.fdm`) and **WAV export** (arrangement, scene or what's playing; 16/24/32-bit).
-- Computer keyboard plays the selected track (A-K row, Z/X octave); space = play/stop.
+- **Projects** (`.fdm`; sound files are referenced by path) and **WAV export** of the whole timeline (16/24/32-bit).
+- The computer keyboard plays the selected MIDI track (A-K row, Z/X octave). Space plays and stops.
 
-Known limits: a track holds 8 different clips (placements of the same clip share its notes; use "Make clip unique" to split them), samples can be previewed but not yet placed on the timeline (no sampler yet), and the arrangement clips can only be moved within their own track.
+Known limits:
+- A MIDI track holds 8 different clips. Copies of a clip share its notes; use "Make clip unique" to split them.
+- Audio clips don't follow tempo changes.
+- Clips can only be moved within their own track.
 
 ## Build
 ```

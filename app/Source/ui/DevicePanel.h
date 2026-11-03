@@ -240,7 +240,7 @@ private:
         if (strip == nullptr) return;
         title_.setText(juce::String(strip->name), juce::dontSendNotification);
 
-        if (auto* ch = app_.selectedChannel()) {
+        if (auto* ch = app_.selectedChannel(); ch != nullptr && !ch->isAudio()) {
             instrument_ = std::make_unique<InstrumentCard>(app_, *ch);
             content_.addAndMakeVisible(*instrument_);
         }

@@ -116,7 +116,9 @@ public:
         } else {
             g.setColour(theme::textDim);
             g.setFont(juce::Font(juce::FontOptions(14.0f)));
-            g.drawText("Double-click an empty clip slot to create a clip", getLocalBounds().withLeft(kKeyW), juce::Justification::centred);
+            g.drawText(ch != nullptr && ch->isAudio() ? "Audio track: there are no notes to edit here"
+                                                      : "Double-click in a track lane to create a clip",
+                       getLocalBounds().withLeft(kKeyW), juce::Justification::centred);
         }
 
         // playhead
@@ -361,7 +363,7 @@ private:
         auto* clip = app_.selectedClip();
         const bool has = clip != nullptr;
         title_.setText(ch == nullptr ? "Select a channel"
-                                     : juce::String(ch->name) + "  -  " + (has ? juce::String(clip->name) : "Scene " + juce::String(app_.selection().scene + 1) + " (empty)"),
+                                     : juce::String(ch->name) + "  -  " + (has ? juce::String(clip->name) : juce::String("no clip selected")),
                        juce::dontSendNotification);
         for (juce::Component* c : std::initializer_list<juce::Component*>{&lengthBox_, &snapBox_, &velocity_, &clearButton_})
             c->setEnabled(has);

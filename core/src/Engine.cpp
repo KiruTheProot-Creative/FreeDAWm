@@ -87,6 +87,7 @@ int Engine::addChannel(InstrumentType type) {
 
         for (auto& clip : c.clips) clip.clear();
         c.clearPlacements();
+        c.clearAudioClips();
         c.playingSlot.store(-1);
         c.queuedSlot.store(kNoQueue);
         c.numPending = 0;
@@ -113,6 +114,7 @@ void Engine::removeChannel(int index) {
     c.playingSlot.store(-1);
     for (auto& clip : c.clips) clip.clear();
     c.clearPlacements();
+    c.clearAudioClips();
 }
 
 void Engine::launchClip(int channel, int slot) {
@@ -242,6 +244,9 @@ int64_t Engine::arrangementEndTick() {
         Placement p;
         for (int i = 0; i < kMaxPlacements; ++i)
             if (ch.getPlacement(i, p)) end = std::max<int64_t>(end, static_cast<int64_t>(p.startTick) + p.lengthTicks);
+        AudioPlacement a;
+        for (int i = 0; i < kMaxPlacements; ++i)
+            if (ch.getAudioClip(i, a)) end = std::max<int64_t>(end, static_cast<int64_t>(a.startTick) + a.lengthTicks);
     }
     return (end + kTicksPerBar - 1) / kTicksPerBar * kTicksPerBar;
 }
@@ -264,7 +269,7 @@ void Engine::drainLiveEvents() {
         const LiveEvent e = live_[r % kLiveCap];
         ++r;
         Channel& ch = channels_[e.channel];
-        if (!ch.active.load(std::memory_order_relaxed)) continue;
+        if (!ch.active.load(std::memory_order_relaxed) || ch.isAudio()) continue;
         IInstrument& inst = ch.instrument();
         if (e.on) inst.noteOn(e.note, static_cast<float>(e.velocity) / 127.0f);
         else      inst.noteOff(e.note);
@@ -300,7 +305,7 @@ void Engine::processTick() {
     const bool arrangement = arrangementMode.load(std::memory_order_relaxed);
 
     for (auto& ch : channels_) {
-        if (!ch.active.load(std::memory_order_relaxed)) continue;
+        if (!ch.active.load(std::memory_order_relaxed) || ch.isAudio()) continue;
         IInstrument& inst = ch.instrument();
 
         // 1. Note-offs that are due.
@@ -362,10 +367,80 @@ void Engine::processTick() {
     }
 }
 
-void Engine::renderInstruments(int pos, int count) {
+int Engine::addSample(std::unique_ptr<AudioSample> s) {
+    if (s == nullptr) return -1;
+    for (int i = 0; i < kMaxSamples; ++i) {
+        if (samples_[static_cast<size_t>(i)] != nullptr) continue;
+        if (s->peaks.empty()) s->computePeaks();
+        samples_[static_cast<size_t>(i)] = std::move(s);
+        samplePtrs_[static_cast<size_t>(i)].store(samples_[static_cast<size_t>(i)].get(), std::memory_order_release);
+        return i;
+    }
+    return -1;
+}
+
+const AudioSample* Engine::sample(int index) const {
+    if (index < 0 || index >= kMaxSamples) return nullptr;
+    return samplePtrs_[static_cast<size_t>(index)].load(std::memory_order_acquire);
+}
+
+int Engine::findSample(const std::string& path) const {
+    for (int i = 0; i < kMaxSamples; ++i)
+        if (samples_[static_cast<size_t>(i)] && samples_[static_cast<size_t>(i)]->path == path) return i;
+    return -1;
+}
+
+void Engine::clearSamples() {
+    for (int i = 0; i < kMaxSamples; ++i) {
+        samplePtrs_[static_cast<size_t>(i)].store(nullptr, std::memory_order_release);
+        samples_[static_cast<size_t>(i)].reset();
+    }
+}
+
+void Engine::renderAudioClips(Channel& ch, float* L, float* R, int count, double tickPos) {
+    const double spt = samplesPerTick();
+    constexpr double kFade = 64.0;                      // frames of fade at clip edges, against clicks
+    for (int c = 0; c < kMaxPlacements; ++c) {
+        AudioPlacement p;
+        if (!ch.getAudioClip(c, p)) continue;
+        const AudioSample* s = sample(p.sample);
+        if (s == nullptr || s->frames() < 2) continue;
+
+        const double startOff = (static_cast<double>(p.startTick) - tickPos) * spt;                 // segment frame where the clip starts
+        const double endOff   = (static_cast<double>(p.startTick) + p.lengthTicks - tickPos) * spt;
+        const int i0 = std::max(0, static_cast<int>(std::ceil(startOff)));
+        const int i1 = std::min(count, static_cast<int>(std::ceil(endOff)));
+        if (i0 >= i1) continue;
+
+        const double ratio = s->sampleRate / sampleRate_;
+        const double lengthFrames = endOff - startOff;
+        const int64_t last = s->frames() - 1;
+        for (int i = i0; i < i1; ++i) {
+            const double local = static_cast<double>(i) - startOff;                               // frames since the clip started
+            const double src = local * ratio;
+            const auto idx = static_cast<int64_t>(src);
+            if (idx >= last) break;
+            const float frac = static_cast<float>(src - static_cast<double>(idx));
+            const auto k = static_cast<size_t>(idx);
+            float gain = 1.0f;
+            if (local < kFade) gain = static_cast<float>(local / kFade);
+            const double toEnd = std::min(lengthFrames - local, static_cast<double>(last - idx) / ratio);
+            if (toEnd < kFade) gain = std::min(gain, static_cast<float>(std::max(0.0, toEnd) / kFade));
+            L[i] += gain * (s->left[k] + frac * (s->left[k + 1] - s->left[k]));
+            R[i] += gain * (s->right[k] + frac * (s->right[k + 1] - s->right[k]));
+        }
+    }
+}
+
+void Engine::renderInstruments(int pos, int count, double tickPos, bool timeline) {
     for (int i = 0; i < kMaxChannels; ++i) {
         Channel& ch = channels_[static_cast<size_t>(i)];
         if (!ch.active.load(std::memory_order_relaxed)) continue;
+        if (ch.isAudio()) {
+            if (timeline && arrangementMode.load(std::memory_order_relaxed))
+                renderAudioClips(ch, chL_[static_cast<size_t>(i)].data() + pos, chR_[static_cast<size_t>(i)].data() + pos, count, tickPos);
+            continue;
+        }
         ch.instrument().render(chL_[static_cast<size_t>(i)].data() + pos,
                                chR_[static_cast<size_t>(i)].data() + pos, count);
     }
@@ -472,23 +547,28 @@ void Engine::processChunk(float* outL, float* outR, int n) {
             if (countdown_ <= 0.0) {
                 const int64_t seek = seekRequest_.exchange(-1, std::memory_order_acquire);
                 if (seek >= 0) { releaseAllChannels(); globalTick_ = seek; }
-                processTick();
-                ++globalTick_;
-                if (loopEnabled.load(std::memory_order_relaxed)) {
+                if (loopEnabled.load(std::memory_order_relaxed)) {        // wrap before the tick plays
                     const int64_t ls = loopStartTick.load(std::memory_order_relaxed);
                     const int64_t le = loopEndTick.load(std::memory_order_relaxed);
                     if (le > ls && globalTick_ >= le) { releaseAllChannels(); globalTick_ = ls; }
                 }
+                processTick();
+                ++globalTick_;
                 countdown_ += samplesPerTick();
             }
             const int seg = std::clamp(static_cast<int>(std::ceil(countdown_)), 1, n - pos);
-            renderInstruments(pos, seg);
+            renderInstruments(pos, seg, static_cast<double>(globalTick_) - countdown_ / samplesPerTick(), true);
             pos += seg;
             countdown_ -= seg;
         }
-        positionTicks_.store(globalTick_, std::memory_order_relaxed);
+        int64_t shown = globalTick_;
+        if (loopEnabled.load(std::memory_order_relaxed)) {
+            const int64_t ls = loopStartTick.load(std::memory_order_relaxed), le = loopEndTick.load(std::memory_order_relaxed);
+            if (le > ls && shown >= le) shown = ls + (shown - le);
+        }
+        positionTicks_.store(shown, std::memory_order_relaxed);
     } else {
-        renderInstruments(0, n);
+        renderInstruments(0, n, 0.0, false);
     }
 
     mix(outL, outR, n);
@@ -570,6 +650,7 @@ void Engine::renderOffline(int scene, int bars, float tailSeconds,
                 ch.playingSlot.store(-1);
                 ch.queuedSlot.store(kNoQueue);
             }
+            arrangementMode.store(false);       // audio clips stop too; restored below
             clipsStopped = true;
         }
         int64_t limit = clipsStopped ? (totalFrames + tailFrames) : totalFrames;

@@ -65,6 +65,14 @@ public:
     juce::String projectName() const;
     const juce::File& projectFile() const { return projectFile_; }
 
+    // ---- audio tracks -------------------------------------------------------------------
+    /** Loads a sound file into the engine's sample pool (or finds it if already loaded). Returns the index or -1. */
+    int importSample(const juce::File& file, juce::String* error = nullptr);
+    /** Places a sound file on an audio track. Returns the clip index or -1 (and shows why). */
+    int addAudioClip(int channel, const juce::File& file, int64_t startTick);
+    /** Length of a pooled sample in ticks at the current tempo. */
+    int sampleLengthTicks(int sampleIndex);
+
     // ---- sample explorer ------------------------------------------------------------
     juce::StringArray sampleFolders();
     void addSampleFolder(const juce::File& folder);

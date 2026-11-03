@@ -13,6 +13,13 @@ public:
         state_ = std::make_unique<AppState>();
         window_ = std::make_unique<MainWindow>(*state_);
 
+        // A project file on the command line (or from a file association) opens straight away.
+        for (auto& arg : juce::StringArray::fromTokens(commandLine, true))
+            if (arg.unquoted().endsWithIgnoreCase(".fdm")) {
+                const auto result = state_->loadProject(juce::File(arg.unquoted()));
+                if (result.failed()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "FreeDAWm", result.getErrorMessage());
+            }
+
         // `--screenshot out.png` renders the window once and quits (used for visual checks in CI).
         const auto args = juce::StringArray::fromTokens(commandLine, true);
         const int i = args.indexOf("--screenshot");

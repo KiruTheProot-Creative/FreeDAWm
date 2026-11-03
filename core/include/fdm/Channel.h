@@ -14,7 +14,7 @@
 
 namespace fdm {
 
-enum class InstrumentType : int { DrumRack = 0, PolySynth = 1 };
+enum class InstrumentType : int { DrumRack = 0, PolySynth = 1, Audio = 2 };
 
 constexpr int kMaxPlacements = 128;   // arrangement clips per channel
 constexpr int kPlacementUnit = kTicksPerStep;   // placements start and end on 16th-note boundaries
@@ -24,6 +24,13 @@ struct Placement {
     int startTick  = 0;
     int lengthTicks = kTicksPerBar;
     int slot       = 0;      // which clip slot's notes it plays
+};
+
+/** A sound file placed on an audio track's timeline. It plays at its own speed (no time-stretching). */
+struct AudioPlacement {
+    int startTick   = 0;
+    int lengthTicks = kTicksPerBar;
+    int sample      = 0;     // index into the engine's sample pool
 };
 
 constexpr int kNoQueue   = -1;   // Channel::queuedSlot: nothing queued
@@ -70,7 +77,45 @@ struct Channel : Strip {
         for (auto& s : sends) s.store(0.0f, std::memory_order_relaxed);
         for (auto& p : pending) p = {};
         for (auto& w : placements) w.store(0, std::memory_order_relaxed);
+        for (auto& w : audioClips) w.store(0, std::memory_order_relaxed);
     }
+
+    bool isAudio() const { return instrumentType.load(std::memory_order_relaxed) == static_cast<int>(InstrumentType::Audio); }
+
+    // ---- audio clips (audio tracks): bit 63 active | bits 52-59 sample | bits 26-51 length | bits 0-25 start (ticks) ----
+    std::array<std::atomic<uint64_t>, kMaxPlacements> audioClips;
+
+    static uint64_t packAudio(const AudioPlacement& p) {
+        const uint64_t start = static_cast<uint64_t>(std::max(0, p.startTick)) & 0x3FFFFFF;
+        const uint64_t len   = static_cast<uint64_t>(std::max(1, p.lengthTicks)) & 0x3FFFFFF;
+        const uint64_t smp   = static_cast<uint64_t>(std::clamp(p.sample, 0, kMaxSamples - 1)) & 0xFF;
+        return (1ull << 63) | (smp << 52) | (len << 26) | start;
+    }
+    static AudioPlacement unpackAudio(uint64_t w) {
+        AudioPlacement p;
+        p.startTick   = static_cast<int>(w & 0x3FFFFFF);
+        p.lengthTicks = static_cast<int>((w >> 26) & 0x3FFFFFF);
+        p.sample      = static_cast<int>((w >> 52) & 0xFF);
+        return p;
+    }
+    int addAudioClip(const AudioPlacement& p) {
+        for (int i = 0; i < kMaxPlacements; ++i)
+            if ((audioClips[static_cast<size_t>(i)].load() >> 63) == 0) {
+                audioClips[static_cast<size_t>(i)].store(packAudio(p), std::memory_order_release);
+                return i;
+            }
+        return -1;
+    }
+    bool getAudioClip(int i, AudioPlacement& out) const {
+        if (i < 0 || i >= kMaxPlacements) return false;
+        const uint64_t w = audioClips[static_cast<size_t>(i)].load(std::memory_order_acquire);
+        if ((w >> 63) == 0) return false;
+        out = unpackAudio(w);
+        return true;
+    }
+    void setAudioClip(int i, const AudioPlacement& p) { audioClips[static_cast<size_t>(i)].store(packAudio(p), std::memory_order_release); }
+    void removeAudioClip(int i) { audioClips[static_cast<size_t>(i)].store(0, std::memory_order_release); }
+    void clearAudioClips() { for (auto& w : audioClips) w.store(0, std::memory_order_release); }
 
     // ---- arrangement placements (UI thread writes; one packed atomic word each) ----
     //   bit 63 active | bits 40-42 slot | bits 20-39 length (units) | bits 0-19 start (units)

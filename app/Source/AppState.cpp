@@ -33,6 +33,10 @@ AppState::AppState() {
 
     fdm::buildDemoProject(engine);
     engine.arrangementMode.store(true);
+    if (const int audio = engine.addChannel(fdm::InstrumentType::Audio); audio >= 0) {
+        engine.channel(audio).setName("Audio");
+        engine.channel(audio).colorIndex.store(4);
+    }
     selection_ = {Selection::Kind::Channel, 0, 0};
     armedChannel_.store(0);
 }
@@ -115,7 +119,7 @@ int AppState::addChannel(fdm::InstrumentType type) {
         index = engine.addChannel(type);
         if (index >= 0) {
             auto& ch = engine.channel(index);
-            ch.setName(type == fdm::InstrumentType::DrumRack ? "Drums" : "Synth");
+            ch.setName(type == fdm::InstrumentType::DrumRack ? "Drums" : (type == fdm::InstrumentType::Audio ? "Audio" : "Synth"));
             ch.colorIndex.store(index);
         }
     }
@@ -286,6 +290,57 @@ void AppState::audioDeviceIOCallbackWithContext(const float* const*, int, float*
 }
 
 // ===========================================================================
+// Audio tracks
+// ===========================================================================
+
+int AppState::importSample(const juce::File& file, juce::String* error) {
+    const auto path = file.getFullPathName().toStdString();
+    if (const int existing = engine.findSample(path); existing >= 0) return existing;
+    auto fail = [error](const juce::String& msg) { if (error) *error = msg; return -1; };
+
+    if (!file.existsAsFile()) return fail("The file is missing.");
+    std::unique_ptr<juce::AudioFormatReader> reader(formats_.createReaderFor(file));
+    if (reader == nullptr) return fail("That isn't an audio file FreeDAWm can read.");
+    if (reader->lengthInSamples <= 1) return fail("The file is empty.");
+    if (static_cast<double>(reader->lengthInSamples) / reader->sampleRate > 20.0 * 60.0)
+        return fail("Files longer than 20 minutes aren't supported yet.");
+
+    const int frames = static_cast<int>(reader->lengthInSamples);
+    juce::AudioBuffer<float> buffer(2, frames);
+    reader->read(&buffer, 0, frames, 0, true, true);       // a mono file fills both channels
+
+    auto sample = std::make_unique<fdm::AudioSample>();
+    sample->path = path;
+    sample->name = file.getFileNameWithoutExtension().toStdString();
+    sample->sampleRate = reader->sampleRate;
+    sample->left.assign(buffer.getReadPointer(0), buffer.getReadPointer(0) + frames);
+    sample->right.assign(buffer.getReadPointer(1), buffer.getReadPointer(1) + frames);
+    sample->computePeaks();
+    const int index = engine.addSample(std::move(sample));
+    if (index < 0) return fail("The project already uses the maximum of " + juce::String(fdm::kMaxSamples) + " sound files.");
+    return index;
+}
+
+int AppState::sampleLengthTicks(int sampleIndex) {
+    const auto* s = engine.sample(sampleIndex);
+    if (s == nullptr) return fdm::kTicksPerBeat;
+    return std::max(1, static_cast<int>(std::ceil(s->seconds() * static_cast<double>(engine.bpm.get()) / 60.0 * fdm::kTicksPerBeat)));
+}
+
+int AppState::addAudioClip(int channel, const juce::File& file, int64_t startTick) {
+    if (channel < 0 || channel >= fdm::kMaxChannels || !engine.channel(channel).isAudio()) return -1;
+    juce::String error;
+    const int sample = importSample(file, &error);
+    if (sample < 0) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Couldn't add " + file.getFileName(), error);
+        return -1;
+    }
+    const int index = engine.channel(channel).addAudioClip({static_cast<int>(startTick), sampleLengthTicks(sample), sample});
+    notifyStructureChanged();
+    return index;
+}
+
+// ===========================================================================
 // Samples
 // ===========================================================================
 
@@ -363,8 +418,12 @@ void AppState::newProject() {
         editors.clear();
         clearAllEffects();
         for (int i = 0; i < fdm::kMaxChannels; ++i) engine.removeChannel(i);
+        engine.clearSamples();
         resetMixerAndTransport();
 
+        const int audio = engine.addChannel(fdm::InstrumentType::Audio);
+        engine.channel(audio).setName("Audio");
+        engine.channel(audio).colorIndex.store(2);
         const int drums = engine.addChannel(fdm::InstrumentType::DrumRack);
         const int synth = engine.addChannel(fdm::InstrumentType::PolySynth);
         engine.channel(drums).setName("Drums");
@@ -428,7 +487,14 @@ juce::Result AppState::saveProject(const juce::File& file) {
     root->setProperty("bpm", engine.bpm.get());
     root->setProperty("swing", engine.swing.get());
     root->setProperty("launchQuantizeTicks", engine.launchQuantizeTicks.load());
-    root->setProperty("arrangement", engine.arrangementMode.load());
+    juce::Array<var> samples;                        // [poolIndex, path] pairs
+    for (int si = 0; si < fdm::kMaxSamples; ++si)
+        if (auto* smp = engine.sample(si)) {
+            juce::Array<var> entry;
+            entry.add(si); entry.add(juce::String(smp->path));
+            samples.add(var(entry));
+        }
+    root->setProperty("samples", samples);
     root->setProperty("loopEnabled", engine.loopEnabled.load());
     root->setProperty("loopStart", engine.loopStartTick.load());
     root->setProperty("loopEnd", engine.loopEndTick.load());
@@ -440,7 +506,16 @@ juce::Result AppState::saveProject(const juce::File& file) {
 
         auto obj = stripToVar(ch);
         const bool drums = ch.instrumentType.load() == static_cast<int>(fdm::InstrumentType::DrumRack);
-        obj->setProperty("instrument", drums ? "drums" : "synth");
+        obj->setProperty("instrument", ch.isAudio() ? "audio" : (drums ? "drums" : "synth"));
+        juce::Array<var> audioClips;
+        for (int ai = 0; ai < fdm::kMaxPlacements; ++ai) {
+            fdm::AudioPlacement a;
+            if (!ch.getAudioClip(ai, a)) continue;
+            juce::Array<var> entry;
+            entry.add(a.startTick); entry.add(a.lengthTicks); entry.add(a.sample);
+            audioClips.add(var(entry));
+        }
+        obj->setProperty("audioClips", audioClips);
         obj->setProperty("color", ch.colorIndex.load());
         obj->setProperty("solo", ch.solo.load());
         juce::Array<var> sends;
@@ -532,7 +607,18 @@ juce::Result AppState::loadProject(const juce::File& file) {
         engine.bpm.set(static_cast<float>(static_cast<double>(root["bpm"])));
         engine.swing.set(static_cast<float>(static_cast<double>(root["swing"])));
         engine.launchQuantizeTicks.store(static_cast<int>(root["launchQuantizeTicks"]));
-        engine.arrangementMode.store(root.hasProperty("arrangement") ? static_cast<bool>(root["arrangement"]) : false);
+        engine.clearSamples();
+        engine.arrangementMode.store(true);
+        std::map<int, int> sampleMap;                  // saved pool index -> new pool index
+        if (auto* samples = root["samples"].getArray())
+            for (auto& sv : *samples)
+                if (auto* a = sv.getArray(); a != nullptr && a->size() >= 2) {
+                    juce::String err;
+                    const juce::File f((*a)[1].toString());
+                    const int idx = importSample(f, &err);
+                    if (idx >= 0) sampleMap[static_cast<int>((*a)[0])] = idx;
+                    else problems.add(f.getFileName() + ": " + err);
+                }
         engine.loopStartTick.store(root.hasProperty("loopStart") ? static_cast<int>(root["loopStart"]) : 0);
         engine.loopEndTick.store(root.hasProperty("loopEnd") ? static_cast<int>(root["loopEnd"]) : fdm::kTicksPerBar * 4);
         engine.loopEnabled.store(static_cast<bool>(root["loopEnabled"]));
@@ -540,7 +626,9 @@ juce::Result AppState::loadProject(const juce::File& file) {
         if (auto* channels = root["channels"].getArray()) {
             for (auto& cv : *channels) {
                 const bool drums = cv["instrument"].toString() == "drums";
-                const int index = engine.addChannel(drums ? fdm::InstrumentType::DrumRack : fdm::InstrumentType::PolySynth);
+                const bool audio = cv["instrument"].toString() == "audio";
+                const int index = engine.addChannel(audio ? fdm::InstrumentType::Audio
+                                                          : (drums ? fdm::InstrumentType::DrumRack : fdm::InstrumentType::PolySynth));
                 if (index < 0) { problems.add("Too many channels."); break; }
                 auto& ch = engine.channel(index);
                 restoreStrip(cv, ch);
@@ -550,6 +638,11 @@ juce::Result AppState::loadProject(const juce::File& file) {
                     for (int s = 0; s < fdm::kNumReturns && s < sends->size(); ++s)
                         ch.sends[static_cast<size_t>(s)].store(static_cast<float>(static_cast<double>((*sends)[s])));
                 varToParams(cv["params"], drums ? ch.drums.params() : ch.synth.params());
+                if (auto* audioClips = cv["audioClips"].getArray())
+                    for (auto& av : *audioClips)
+                        if (auto* a = av.getArray(); a != nullptr && a->size() >= 3)
+                            if (auto it = sampleMap.find(static_cast<int>((*a)[2])); it != sampleMap.end())
+                                ch.addAudioClip({static_cast<int>((*a)[0]), static_cast<int>((*a)[1]), it->second});
                 if (auto* placements = cv["placements"].getArray())
                     for (auto& pv : *placements)
                         if (auto* a = pv.getArray(); a != nullptr && a->size() >= 3)

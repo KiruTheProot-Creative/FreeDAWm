@@ -4,30 +4,13 @@
 #include "ClipEditor.h"
 #include "Explorer.h"
 #include "DevicePanel.h"
-#include "SessionView.h"
+#include "MixerView.h"
 #include "TransportBar.h"
 
-/** The session grid needs about 540 px; scroll when the bottom panel is shorter. */
-class SessionHolder : public juce::Component {
-public:
-    explicit SessionHolder(AppState& app) : session(app) {
-        viewport_.setViewedComponent(&session, false);
-        viewport_.setScrollBarsShown(true, false);
-        addAndMakeVisible(viewport_);
-    }
-    void resized() override {
-        viewport_.setBounds(getLocalBounds());
-        session.setSize(viewport_.getMaximumVisibleWidth(), std::max(540, viewport_.getMaximumVisibleHeight()));
-    }
-    SessionView session;
-private:
-    juce::Viewport viewport_;
-};
-
-class MainComponent : public juce::Component {
+class MainComponent : public juce::Component, public juce::DragAndDropContainer {
 public:
     explicit MainComponent(AppState& app)
-        : app_(app), transport_(app), explorer_(app), arrangement_(app), sessionHolder_(app), clipEditor_(app), devicePanel_(app) {
+        : app_(app), transport_(app), explorer_(app), arrangement_(app), mixer_(app), clipEditor_(app), devicePanel_(app) {
         addAndMakeVisible(transport_);
         addAndMakeVisible(explorer_);
         addAndMakeVisible(arrangement_);
@@ -37,8 +20,8 @@ public:
         tabs_.setOutline(0);
         tabs_.addTab("Piano Roll", theme::panel, &clipEditor_, false);
         tabs_.addTab("FX Chain", theme::panel, &devicePanel_, false);
-        tabs_.addTab("Session", theme::panel, &sessionHolder_, false);
-        sessionHolder_.session.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
+        tabs_.addTab("Mixer", theme::panel, &mixer_, false);
+        mixer_.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
         arrangement_.requestTab = [this](int tab) { tabs_.setCurrentTabIndex(tab); };
         splitter_.onDrag = [this](int dy) { bottomHeight_ = juce::jlimit(220, std::max(240, getHeight() - 260), bottomHeight_ - dy); resized(); };
 
@@ -106,7 +89,7 @@ private:
     ArrangementView arrangement_;
     Splitter splitter_;
     int bottomHeight_ = 360;
-    SessionHolder sessionHolder_;
+    MixerView mixer_;
     ClipEditor clipEditor_;
     DevicePanel devicePanel_;
     juce::TabbedComponent tabs_{juce::TabbedButtonBar::TabsAtTop};

@@ -20,11 +20,6 @@ public:
         loop_.onClick = [this] { app_.engine.loopEnabled.store(loop_.getToggleState()); app_.structureHasChanged(); };
         addAndMakeVisible(loop_);
 
-        arrange_.setButtonText("Arrange");
-        session_.setButtonText("Session");
-        for (auto* b : {&arrange_, &session_}) { b->setClickingTogglesState(true); b->setRadioGroupId(55); addAndMakeVisible(*b); }
-        arrange_.onClick = [this] { app_.engine.arrangementMode.store(true); };
-        session_.onClick = [this] { app_.engine.arrangementMode.store(false); };
 
         auto menuButton = [this](juce::TextButton& b, const char* text, std::function<void()> fn) {
             b.setButtonText(text);
@@ -58,15 +53,6 @@ public:
         swing_.onValueChange = [this] { app_.engine.swing.set(static_cast<float>(swing_.getValue() / 100.0)); };
         addAndMakeVisible(swing_);
 
-        struct Q { const char* name; int ticks; };
-        static const Q options[] = {{"Launch: None", 0}, {"Launch: 1/16", 240}, {"Launch: 1/8", 480}, {"Launch: 1/4", 960},
-                                    {"Launch: 1/2", 1920}, {"Launch: 1 Bar", 3840}, {"Launch: 2 Bars", 7680}, {"Launch: 4 Bars", 15360}};
-        for (int i = 0; i < 8; ++i) quant_.addItem(options[i].name, i + 1);
-        quant_.onChange = [this] {
-            static const int ticks[] = {0, 240, 480, 960, 1920, 3840, 7680, 15360};
-            app_.engine.launchQuantizeTicks.store(ticks[quant_.getSelectedId() - 1]);
-        };
-        addAndMakeVisible(quant_);
 
         for (auto* l : {&position_, &time_, &cpu_, &project_}) {
             const bool big = l == &position_ || l == &time_;
@@ -125,12 +111,6 @@ public:
         bpm_.setBounds(r.removeFromLeft(104));
         r.removeFromLeft(6);
         swing_.setBounds(r.removeFromLeft(104));
-        r.removeFromLeft(10);
-        quant_.setBounds(r.removeFromLeft(132));
-        r.removeFromLeft(16);
-        arrange_.setBounds(r.removeFromLeft(86));
-        r.removeFromLeft(3);
-        session_.setBounds(r.removeFromLeft(78));
         cpu_.setBounds(r.removeFromRight(74));
         project_.setBounds(r.removeFromRight(200));
     }
@@ -144,16 +124,9 @@ private:
     void syncFromEngine() {
         bpm_.setValue(app_.engine.bpm.get(), juce::dontSendNotification);
         swing_.setValue(app_.engine.swing.get() * 100.0, juce::dontSendNotification);
-        const int q = app_.engine.launchQuantizeTicks.load();
-        static const int ticks[] = {0, 240, 480, 960, 1920, 3840, 7680, 15360};
-        int id = 6;
-        for (int i = 0; i < 8; ++i) if (ticks[i] == q) id = i + 1;
-        quant_.setSelectedId(id, juce::dontSendNotification);
         project_.setText(app_.projectName(), juce::dontSendNotification);
         project_.setJustificationType(juce::Justification::centredRight);
         loop_.setToggleState(app_.engine.loopEnabled.load(), juce::dontSendNotification);
-        arrange_.setToggleState(app_.engine.arrangementMode.load(), juce::dontSendNotification);
-        session_.setToggleState(!app_.engine.arrangementMode.load(), juce::dontSendNotification);
     }
 
     void timerCallback() override {
@@ -216,21 +189,17 @@ private:
     }
 
     void exportAudio() {
-        auto* w = new juce::AlertWindow("Export audio", "Renders from the start of the project, exactly as it would play.", juce::MessageBoxIconType::NoIcon);
-        w->addComboBox("scene", {"Arrangement (whole timeline)", "What's playing now", "Scene 1", "Scene 2", "Scene 3", "Scene 4", "Scene 5", "Scene 6", "Scene 7", "Scene 8"}, "Source");
+        auto* w = new juce::AlertWindow("Export audio", "Renders the whole timeline, from bar 1 to the end of the last clip, plus a short tail.", juce::MessageBoxIconType::NoIcon);
         w->addComboBox("format", {"16-bit WAV", "24-bit WAV", "32-bit float WAV"}, "Format");
-        w->getComboBoxComponent("scene")->setSelectedItemIndex(app_.engine.arrangementMode.load() ? 0 : 2);
         w->getComboBoxComponent("format")->setSelectedItemIndex(1);
-        w->addTextEditor("bars", "8", "Length in bars (ignored for the arrangement)");
         w->addButton("Export", 1, juce::KeyPress(juce::KeyPress::returnKey));
         w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
         w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int result) {
             std::unique_ptr<juce::AlertWindow> owner(w);
             if (result != 1) return;
-            const int sceneIndex = w->getComboBoxComponent("scene")->getSelectedItemIndex();
-            const int scene = sceneIndex == 0 ? fdm::Engine::kRenderArrangement : sceneIndex - 2;
+            const int scene = fdm::Engine::kRenderArrangement;
             const int fmt = w->getComboBoxComponent("format")->getSelectedItemIndex();
-            const int bars = scene == fdm::Engine::kRenderArrangement ? 0 : juce::jlimit(1, 128, w->getTextEditorContents("bars").getIntValue());
+            const int bars = 0;                   // the whole timeline
             const auto format = fmt == 0 ? fdm::WavFormat::Pcm16 : (fmt == 1 ? fdm::WavFormat::Pcm24 : fdm::WavFormat::Float32);
             chooser_ = std::make_unique<juce::FileChooser>("Export audio", projectsFolder().getChildFile(app_.projectName() + ".wav"), "*.wav");
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
@@ -284,10 +253,9 @@ private:
 
     AppState& app_;
     IconButton play_, stop_;
-    juce::TextButton fileButton_, audioButton_, pluginsButton_, loop_, arrange_, session_;
+    juce::TextButton fileButton_, audioButton_, pluginsButton_, loop_;
     juce::Rectangle<int> readoutBounds_;
     juce::Slider bpm_, swing_;
-    juce::ComboBox quant_;
     juce::Label position_, time_, cpu_, project_;
     std::unique_ptr<juce::FileChooser> chooser_;
 };

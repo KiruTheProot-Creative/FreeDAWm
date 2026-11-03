@@ -550,3 +550,82 @@ TEST(arrangement_offline_render_matches_timeline_and_leaves_state_alone) {
     CHECK(rest > 0.01f);
     CHECK(!e.arrangementMode.load());                            // mode restored
 }
+
+// ---------------------------------------------------------------------------
+// Audio tracks
+// ---------------------------------------------------------------------------
+
+namespace {
+std::unique_ptr<AudioSample> makeImpulseSample(double rate, int frames, int impulseAt) {
+    auto s = std::make_unique<AudioSample>();
+    s->sampleRate = rate;
+    s->left.assign(static_cast<size_t>(frames), 0.0f);
+    s->left[static_cast<size_t>(impulseAt)] = 1.0f;
+    s->right = s->left;
+    s->path = "impulse.wav";
+    return s;
+}
+int firstAbove(const std::vector<float>& v, float threshold) {
+    for (size_t i = 0; i < v.size(); ++i) if (std::fabs(v[i]) > threshold) return static_cast<int>(i);
+    return -1;
+}
+}  // namespace
+
+TEST(audio_clip_plays_sample_accurately_at_its_bar) {
+    Engine e;
+    e.prepare(kSr, 512);
+    e.bpm.set(120.0f);
+    const int ch = e.addChannel(InstrumentType::Audio);
+    const int smp = e.addSample(makeImpulseSample(kSr, 48000, 1000));
+    CHECK(smp >= 0 && e.sample(smp) != nullptr);
+    CHECK(e.findSample("impulse.wav") == smp);
+    e.channel(ch).addAudioClip({kTicksPerBar, 2 * kTicksPerBar, smp});
+    e.arrangementMode.store(true);
+    std::vector<float> L, R;
+    e.renderOffline(Engine::kRenderArrangement, 0, 0.0f, L, R);
+    CHECK(L.size() == static_cast<size_t>(3 * kBar));
+    CHECK_NEAR(firstAbove(L, 0.3f), kBar + 1000, 1);
+}
+
+TEST(audio_clip_resamples_other_rates_and_stops_at_its_end) {
+    Engine e;
+    e.prepare(kSr, 512);
+    e.bpm.set(120.0f);
+    const int ch = e.addChannel(InstrumentType::Audio);
+    // 24 kHz file: its impulse at frame 500 must land at 1000 frames in 48 kHz output
+    const int smp = e.addSample(makeImpulseSample(24000.0, 24000, 500));
+    e.channel(ch).addAudioClip({0, kTicksPerBar, smp});
+    // a second clip cut short before its impulse: must stay silent
+    const int smp2 = e.addSample(makeImpulseSample(kSr, 48000, 30000));
+    e.channel(ch).addAudioClip({2 * kTicksPerBar, kTicksPerBeat, smp2});     // a beat = 24000 frames < 30000
+    std::vector<float> L, R;
+    e.renderOffline(Engine::kRenderArrangement, 0, 0.0f, L, R);
+    CHECK(firstAbove(L, 0.2f) >= 999 && firstAbove(L, 0.2f) <= 1001);
+    float late = 0.0f;
+    for (size_t i = static_cast<size_t>(2 * kBar); i < L.size(); ++i) late = std::max(late, std::fabs(L[i]));
+    CHECK(late < 1.0e-6f);
+}
+
+TEST(audio_clip_follows_seek_and_loop) {
+    Engine e;
+    e.prepare(kSr, 512);
+    e.bpm.set(120.0f);
+    const int ch = e.addChannel(InstrumentType::Audio);
+    const int smp = e.addSample(makeImpulseSample(kSr, 96000, 100));
+    e.channel(ch).addAudioClip({0, kTicksPerBar, smp});
+    e.arrangementMode.store(true);
+    e.loopStartTick.store(0);
+    e.loopEndTick.store(kTicksPerBar);
+    e.loopEnabled.store(true);
+    e.play();
+    Rendered out;
+    run(e, 3 * kBar + 2000, out);
+    int hits = 0;
+    for (size_t i = 0; i < out.l.size(); ++i) if (out.l[i] > 0.3f) ++hits;
+    CHECK(hits == 4);                                  // once per loop pass
+    e.channel(ch).removeAudioClip(0);
+    e.stop();
+    run(e, 512, out);
+    e.clearSamples();
+    CHECK(e.sample(smp) == nullptr);
+}

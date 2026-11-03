@@ -172,6 +172,7 @@ public:
         tree_.setColour(juce::DirectoryContentsDisplayComponent::highlightColourId, theme::accentDeep);
         tree_.setColour(juce::DirectoryContentsDisplayComponent::highlightedTextColourId, theme::text);
         tree_.setItemHeight(22);
+        tree_.setDragAndDropDescription("fdm-sample");      // drag a file onto an audio track
         tree_.addListener(this);
         addAndMakeVisible(tree_);
 
@@ -196,7 +197,7 @@ public:
 
         status_.setFont(theme::labelFont(10.0f));
         status_.setColour(juce::Label::textColourId, theme::readout);
-        status_.setText("CLICK A FILE TO PREVIEW IT", juce::dontSendNotification);
+        status_.setText("CLICK TO PREVIEW, DRAG ONTO THE TIMELINE", juce::dontSendNotification);
         addAndMakeVisible(status_);
 
         reloadRoots({});
@@ -256,7 +257,7 @@ private:
 
     void timerCallback() override {
         if (!app_.isPreviewingSample() && status_.getText().startsWith("PLAYING"))
-            status_.setText("CLICK A FILE TO PREVIEW IT", juce::dontSendNotification);
+            status_.setText("CLICK TO PREVIEW, DRAG ONTO THE TIMELINE", juce::dontSendNotification);
     }
 
     AppState& app_;

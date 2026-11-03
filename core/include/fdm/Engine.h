@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "fdm/AudioSample.h"
 #include "fdm/Channel.h"
 #include "fdm/dsp/Dsp.h"
 
@@ -61,6 +62,14 @@ public:
     /** renderOffline() scene value that renders the arrangement from tick 0. */
     static constexpr int kRenderArrangement = -2;
 
+    // ---- sample pool (audio tracks) ----------------------------------------
+    /** Takes ownership; returns the pool index or -1 if full. UI thread. */
+    int  addSample(std::unique_ptr<AudioSample> sample);
+    const AudioSample* sample(int index) const;
+    int  findSample(const std::string& path) const;          // -1 if not loaded
+    /** Frees every sample. The audio thread must NOT be running. */
+    void clearSamples();
+
     // ---- channels & mixer ------------------------------------------------
     Channel& channel(int i) { return channels_[static_cast<size_t>(i)]; }
     Strip&   returnStrip(int i) { return returns_[static_cast<size_t>(i)]; }
@@ -105,12 +114,16 @@ private:
     void processTick();
     void releaseAllChannels();
     void triggerNotes(Channel& ch, Clip& clip, int local, int len, IInstrument& inst);
-    void renderInstruments(int pos, int count);
+    void renderInstruments(int pos, int count, double tickPos, bool timeline);
+    void renderAudioClips(Channel& ch, float* L, float* R, int count, double tickPos);
     void mix(float* outL, float* outR, int n);
     void processStrip(Strip& s, float* L, float* R, int n, bool audible, bool meter = true);
     void pushLive(const LiveEvent& e);
     void prepareInstruments();
     double samplesPerTick() const { return sampleRate_ * 60.0 / (static_cast<double>(bpm.get()) * kPPQ); }
+
+    std::array<std::unique_ptr<AudioSample>, kMaxSamples>  samples_;
+    std::array<std::atomic<const AudioSample*>, kMaxSamples> samplePtrs_{};
 
     std::array<Channel, kMaxChannels> channels_;
     std::array<Strip, kNumReturns>    returns_;
