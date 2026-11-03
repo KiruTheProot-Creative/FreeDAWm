@@ -4,6 +4,7 @@
 #include "../Source/EnginePlayHead.h"
 #include "../Source/PluginInstrument.h"
 #include "../Source/PluginScanner.h"
+#include "../Source/vst2/BridgedPlugin.h"
 #include "../Source/vst2/Vst2Format.h"
 
 namespace {
@@ -19,6 +20,134 @@ float runOnce(juce::AudioPluginInstance& p, float input, juce::MidiBuffer* midi 
     return buf.getSample(1, 100);
 }
 }  // namespace
+
+/** The same plugins, run inside fdm_bridge64 (sandbox mode). Optional args 7 and 8: a 32-bit plain and synth plugin. */
+void runBridgeTests(char** argv, int argc) {
+    bridged::setBridgeFolder(juce::File(juce::String(argv[6])));
+    Vst2Format::setRunInSeparateProcess(true);
+    Vst2Format format;
+    juce::String error;
+
+    auto check = [&](const char* label, const juce::String& plainPath, const juce::String& synthPath, bridged::Arch expect) {
+        std::printf("[ .. ] bridge (%s): scan, parameters, MIDI, state, programs\n", label);
+        EXPECT(Vst2Format::bridgeFor(juce::File(plainPath)) == expect);
+        juce::OwnedArray<juce::PluginDescription> found;
+        format.findAllTypesForFile(found, plainPath);
+        EXPECT(found.size() == 1);
+        if (found.isEmpty()) return;
+        EXPECT(found[0]->name == "FDM Test Gain" && found[0]->pluginFormatName == "VST2");
+        auto plugin = Vst2Format::create(*found[0], 48000.0, 256, error);
+        EXPECT(plugin != nullptr);
+        if (plugin == nullptr) { std::printf("    %s\n", error.toRawUTF8()); return; }
+        plugin->prepareToPlay(48000.0, 256);
+        EXPECT(plugin->getParameters().size() == 3);
+        EXPECT(plugin->getHostedParameter(0)->getName(32) == "Gain");
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.25f, 1e-6);
+        plugin->getHostedParameter(0)->setValue(1.0f);
+        EXPECT_NEAR(plugin->getHostedParameter(0)->getValue(), 1.0f, 1e-6);
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.5f, 1e-6);
+        EXPECT(plugin->getHostedParameter(0)->getText(1.0f, 16) == "2.00");
+        EXPECT_NEAR(plugin->getHostedParameter(1)->getValue(), 0.12f, 1e-4);      // tempo seen through the bridge
+        juce::MidiBuffer midi;
+        midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.8f), 10);
+        runOnce(*plugin, 0.0f, &midi);
+        EXPECT_NEAR(plugin->getHostedParameter(2)->getValue(), 0.01f, 1e-6);
+        juce::MemoryBlock state;
+        plugin->getStateInformation(state);
+        plugin->getHostedParameter(0)->setValue(0.0f);
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.0f, 1e-6);
+        plugin->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.5f, 1e-6);
+        plugin->setCurrentProgram(2);
+        EXPECT(plugin->getCurrentProgram() == 2);
+        EXPECT(plugin->getProgramName(1) == "Preset 2");
+        {
+            juce::AudioBuffer<float> big(2, 1000);
+            for (int c = 0; c < 2; ++c) juce::FloatVectorOperations::fill(big.getWritePointer(c), 0.25f, 1000);
+            juce::MidiBuffer none;
+            plugin->processBlock(big, none);
+            EXPECT_NEAR(big.getSample(0, 999), 0.5f, 1e-6);
+        }
+
+        {
+            const auto t0 = juce::Time::getHighResolutionTicks();
+            for (int i = 0; i < 2000; ++i) runOnce(*plugin, 0.25f);
+            const double us = juce::Time::highResolutionTicksToSeconds(juce::Time::getHighResolutionTicks() - t0) * 1.0e6 / 2000.0;
+            std::printf("    round trip per 256-sample block: %.1f microseconds (a block lasts 5333)\n", us);
+            EXPECT(us < 2000.0);
+        }
+        std::printf("[ .. ] bridge (%s): a plugin crashing while playing only silences itself\n", label);
+        plugin->getHostedParameter(0)->setValue(0.777f);
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.0f, 1e-6);           // the bridge died; we got silence, not a crash
+        EXPECT_NEAR(runOnce(*plugin, 0.25f), 0.0f, 1e-6);
+        plugin.reset();                                             // and shutting it down is clean
+
+        if (synthPath.isEmpty()) return;
+        std::printf("[ .. ] bridge (%s): instrument, sample-accurate notes and tempo\n", label);
+        juce::OwnedArray<juce::PluginDescription> synths;
+        format.findAllTypesForFile(synths, synthPath);
+        EXPECT(synths.size() == 1 && synths[0]->isInstrument);
+        if (synths.size() != 1) return;
+        auto synth = Vst2Format::create(*synths[0], 48000.0, 512, error);
+        EXPECT(synth != nullptr);
+        if (synth == nullptr) return;
+        fdm::Engine engine;
+        engine.prepare(48000.0, 512);
+        engine.bpm.set(120.0f);
+        EnginePlayHead playHead(engine);
+        synth->setPlayHead(&playHead);
+        PluginInstrument instrument(std::move(synth));
+        instrument.prepare(48000.0, 512);
+        const int ch = engine.addChannel(fdm::InstrumentType::PolySynth);
+        engine.channel(ch).external.store(&instrument);
+        auto& clip = engine.channel(ch).clips[0];
+        clip.create(1);
+        fdm::NoteEvent n;
+        n.pitch = 60;
+        n.start = fdm::kTicksPerBeat + 7;
+        n.length = fdm::kTicksPerStep;
+        clip.addNote(n);
+        engine.channel(ch).addPlacement({0, fdm::kTicksPerBar, 0});
+        std::vector<float> L, R;
+        engine.renderOffline(fdm::Engine::kRenderArrangement, 1, 0.0f, L, R);
+        int first = -1, last = -1;
+        for (int i = 0; i < static_cast<int>(L.size()); ++i)
+            if (std::abs(L[static_cast<size_t>(i)]) > 0.01f) { if (first < 0) first = i; last = i; }
+        std::printf("    note sounds from frame %d to %d\n", first, last);
+        EXPECT(first == 24175);
+        EXPECT(std::abs(last - (24175 + 6000 - 1)) <= 1);
+        EXPECT_NEAR(instrument.plugin().getHostedParameter(1)->getValue() * 1000.0f, 120.0f, 0.01f);
+        engine.bpm.set(137.0f);
+        engine.renderOffline(fdm::Engine::kRenderArrangement, 1, 0.0f, L, R);
+        EXPECT_NEAR(instrument.plugin().getHostedParameter(1)->getValue() * 1000.0f, 137.0f, 0.01f);
+        engine.channel(ch).external.store(nullptr);
+    };
+
+    check("64-bit sandbox", argv[1], argv[5], sizeof(void*) == 8 ? bridged::Arch::x64 : bridged::Arch::x86);
+
+    std::printf("[ .. ] bridge: shell plugins\n");
+    {
+        juce::OwnedArray<juce::PluginDescription> shell;
+        format.findAllTypesForFile(shell, argv[2]);
+        EXPECT(shell.size() == 2);
+        if (shell.size() == 2) {
+            EXPECT(shell[1]->name == "FDM Shell B" && shell[1]->uniqueId == 1002);
+            auto b = Vst2Format::create(*shell[1], 48000.0, 256, error);
+            EXPECT(b != nullptr);
+            if (b != nullptr) { b->prepareToPlay(48000.0, 256); EXPECT_NEAR(runOnce(*b, 0.25f), 0.75f, 1e-6); }
+        }
+    }
+
+    std::printf("[ .. ] bridge: a plugin that crashes while loading\n");
+    {
+        juce::OwnedArray<juce::PluginDescription> none;
+        format.findAllTypesForFile(none, argv[3]);
+        EXPECT(none.isEmpty());
+    }
+
+    if (argc >= 9) check("32-bit", argv[7], argv[8], bridged::Arch::x86);
+    Vst2Format::setRunInSeparateProcess(false);
+}
 
 int main(int argc, char** argv) {
     juce::StringArray args;
@@ -192,6 +321,8 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    if (argc >= 7) runBridgeTests(argv, argc);
 
     std::printf(failures == 0 ? "VST2 host: all checks passed\n" : "VST2 host: %d check(s) failed\n", failures);
     return failures == 0 ? 0 : 1;

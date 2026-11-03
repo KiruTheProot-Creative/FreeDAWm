@@ -128,6 +128,10 @@ void FDM_VST2_CALL processReplacing(Plugin* p, float** in, float** out, i32 fram
     }
     t->pendingCount = 0;
 #else
+    if (t->params[0] > 0.7769f && t->params[0] < 0.7771f) {      // test hook: gain 0.777 = "crash while playing"
+        volatile int* nowhere = nullptr;
+        *nowhere = 1;
+    }
     const float gain = 2.0f * t->params[0] * t->multiplier;
     for (int c = 0; c < 2; ++c)
         for (int i = 0; i < frames; ++i) out[c][i] = in[c][i] * gain;

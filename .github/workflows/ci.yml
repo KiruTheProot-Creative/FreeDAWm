@@ -5,23 +5,58 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]      # FreeDAWm targets Windows and Linux
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libegl-dev
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+                                  libfreetype-dev libfontconfig1-dev libgl1-mesa-dev libegl-dev g++-multilib
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release -j 4
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      # ---- the 32-bit plugin bridge, plus 32-bit test plugins to check it end to end ----
+      - name: Build 32-bit bridge (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S bridge -B build32 -A Win32 -DFDM_BRIDGE_TEST_PLUGINS=ON
+          cmake --build build32 --config Release
+          cp build32/Release/fdm_bridge32.exe build/bridge/Release/
+          cp build32/Release/fdm_bridge32.exe build/app/FreeDAWm_artefacts/Release/
+      - name: Build 32-bit bridge (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S bridge -B build32 -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DFDM_BRIDGE_TEST_PLUGINS=ON
+          cmake --build build32 -j 4
+          file build32/fdm_bridge32 build32/fdm_test_vst2_plain.so
+          cp build32/fdm_bridge32 build/bridge/
+          cp build32/fdm_bridge32 build/app/FreeDAWm_artefacts/Release/
+      - name: Test 32-bit plugins through the bridge
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            T=build/app/fdm_vst2_host_test_artefacts/Release/fdm_vst2_host_test.exe; P=build/app/Release; B=build/bridge/Release
+            P32=build32/Release; EXT=dll
+          else
+            T=build/app/fdm_vst2_host_test_artefacts/Release/fdm_vst2_host_test; P=build/app; B=build/bridge
+            P32=build32; EXT=so
+          fi
+          "$T" $P/fdm_test_vst2_plain.$EXT $P/fdm_test_vst2_shell.$EXT $P/fdm_test_vst2_crash.$EXT $P/fdm_test_vst2_hang.$EXT \
+               $P/fdm_test_vst2_synth.$EXT $B $P32/fdm_test_vst2_plain.$EXT $P32/fdm_test_vst2_synth.$EXT
+
       - uses: actions/upload-artifact@v4
         with:
           name: FreeDAWm-${{ runner.os }}
           path: |
-            build/app/FreeDAWm_artefacts/**
+            build/app/FreeDAWm_artefacts/Release/**

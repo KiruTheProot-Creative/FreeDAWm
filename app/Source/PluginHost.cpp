@@ -144,6 +144,7 @@ PluginHost::PluginHost(juce::PropertiesFile* settings) : settings_(settings) {
         extraFolders_.removeEmptyStrings();
         useSystemFolders_ = settings_->getBoolValue("scanSystemVst3", false);
         vst2Enabled_ = settings_->getBoolValue("vst2Enabled", true);
+        Vst2Format::setRunInSeparateProcess(settings_->getBoolValue("vst2Sandbox", false));
     }
 }
 
@@ -158,6 +159,7 @@ void PluginHost::saveSettings() {
     settings_->setValue("pluginFolders", extraFolders_.joinIntoString("|"));
     settings_->setValue("scanSystemVst3", useSystemFolders_);
     settings_->setValue("vst2Enabled", vst2Enabled_);
+    settings_->setValue("vst2Sandbox", Vst2Format::runsInSeparateProcess());
     settings_->saveIfNeeded();
 }
 
@@ -288,3 +290,6 @@ std::unique_ptr<juce::AudioPluginInstance> PluginHost::createInstrument(const ju
     }
     return instance;
 }
+
+bool PluginHost::vst2Sandboxed() const { return Vst2Format::runsInSeparateProcess(); }
+void PluginHost::setVst2Sandboxed(bool on) { Vst2Format::setRunInSeparateProcess(on); saveSettings(); }

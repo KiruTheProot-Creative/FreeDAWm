@@ -1,6 +1,6 @@
 # FreeDAWm
 
-A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-making first.
+A free, channel-based DAW in C++ for Windows and Linux with an Ableton-style session workflow. Beat-making first.
 
 ## What works today
 - **Layout**: REAPER-style transport and track lanes on top, an Ableton-style detail panel underneath, and an explorer sidebar on the left. The dark red look is inspired by Emulon X.
@@ -41,7 +41,10 @@ Known limits:
 ## VST2 support
 FreeDAWm hosts VST 2.x plugins without Steinberg's VST2 SDK. `app/Source/vst2/Vst2Abi.h` is FreeDAWm's own description of the binary interface: the struct layout, function signatures and opcode numbers. It was written from scratch for interoperability, with its own names. `Vst2Format` plugs it into JUCE's plugin scanner.
 - Supported: effects and instruments, parameters, programs, state chunks, MIDI in, transport info, editors (Windows, macOS, Linux X11), and shell plugins (several plugins in one file).
-- Not supported: 32-bit plugins (a 64-bit host can't load them), double-precision processing, and plugins sending MIDI out.
+- **32-bit plugins** run in `fdm_bridge32`, a small helper process next to FreeDAWm that talks to it through shared memory. They show up as *[VST2 32-bit]*.
+- **Sandbox**: Preferences > Plugins > "Run VST2 plugins in a separate process" runs 64-bit VST2 plugins in `fdm_bridge64`. A crash then only silences that plugin.
+- The bridge adds about 30 microseconds per audio block.
+- Not supported: double-precision processing, and plugins sending MIDI out.
 - `app/tests/` holds a small VST2 plugin and a host test that loads it.
 - VST2 can be switched off in Preferences > Plugins.
 
@@ -56,6 +59,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build
 ```
+The 32-bit bridge is built separately (Windows: `cmake -S bridge -B build32 -A Win32`; Linux: add `-DCMAKE_CXX_FLAGS=-m32` and install `g++-multilib`), then `fdm_bridge32` goes next to the FreeDAWm executable. CI does this.
+
 Linux needs: `libasound2-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev`.
 Use `-DFDM_BUILD_APP=OFF` to build only the JUCE-free core, tests and the `fdm_render` tool.
 

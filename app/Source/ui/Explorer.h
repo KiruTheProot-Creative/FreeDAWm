@@ -151,7 +151,7 @@ private:
             for (auto& f : bundled)
                 if (juce::File(d.fileOrIdentifier).isAChildOf(f)) isBundled = true;
             Row r;
-            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + "]");
+            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + (d.descriptiveName.endsWith("(32-bit)") ? " 32-bit]" : "]"));
             r.desc = d;
             (isBundled ? official : other).push_back(r);
         }
@@ -164,7 +164,7 @@ private:
         for (auto& d : app_.pluginHost->availableInstruments()) {
             if (filter_.isNotEmpty() && !d.name.containsIgnoreCase(filter_) && !d.manufacturerName.containsIgnoreCase(filter_)) continue;
             Row r;
-            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + "]");
+            r.title = d.name + (d.pluginFormatName == "VST3" ? juce::String() : "   [" + d.pluginFormatName + (d.descriptiveName.endsWith("(32-bit)") ? " 32-bit]" : "]"));
             r.desc = d;
             instruments.push_back(r);
         }

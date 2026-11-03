@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 
+#include "BridgedPlugin.h"
 #include "Vst2Abi.h"
 
 using namespace fdm::vst2;
@@ -593,6 +594,21 @@ void collect(const juce::File& dir, bool recursive, juce::StringArray& out, Vst2
 // Vst2Format
 // ===========================================================================
 
+namespace {
+std::atomic<bool> sandboxAll{false};
+}
+
+void Vst2Format::setRunInSeparateProcess(bool on) { sandboxAll = on; }
+bool Vst2Format::runsInSeparateProcess() { return sandboxAll; }
+
+bridged::Arch Vst2Format::bridgeFor(const juce::File& file) {
+    const auto arch = bridged::architectureOf(binaryFor(file));
+    constexpr bool host64 = sizeof(void*) == 8;
+    if (host64 && arch == bridged::Arch::x86) return bridged::Arch::x86;               // 32-bit plugin: always bridged
+    if (sandboxAll && arch == (host64 ? bridged::Arch::x64 : bridged::Arch::x86)) return arch;
+    return bridged::Arch::unknown;                                                       // load in-process
+}
+
 bool Vst2Format::fileMightContainThisPluginType(const juce::String& fileOrIdentifier) {
     const juce::File f(fileOrIdentifier);
    #if JUCE_WINDOWS
@@ -615,6 +631,11 @@ bool Vst2Format::doesPluginStillExist(const juce::PluginDescription& d) { return
 void Vst2Format::findAllTypesForFile(juce::OwnedArray<juce::PluginDescription>& results, const juce::String& fileOrIdentifier) {
     if (!fileMightContainThisPluginType(fileOrIdentifier)) return;
     const juce::File file(fileOrIdentifier);
+    if (const auto arch = bridgeFor(file); arch != bridged::Arch::unknown) {     // 32-bit or sandboxed: ask the bridge
+        juce::String error;
+        if (!bridged::describe(file, arch, results, error)) juce::Logger::writeToLog("VST2 bridge scan failed: " + error);
+        return;
+    }
     // Many VST2 plugins expect to be created on the UI thread.
     if (juce::MessageManager::existsAndIsCurrentThread()) scanFile(results, file);
     else juce::MessageManager::callSync([&] { scanFile(results, file); });
@@ -652,6 +673,8 @@ juce::FileSearchPath Vst2Format::getDefaultLocationsToSearch() {
 
 std::unique_ptr<juce::AudioPluginInstance> Vst2Format::create(const juce::PluginDescription& desc, double sampleRate, int blockSize,
                                                               juce::String& error) {
+    if (const auto arch = bridgeFor(juce::File(desc.fileOrIdentifier)); arch != bridged::Arch::unknown)
+        return bridged::create(desc, arch, sampleRate, blockSize, error);
     auto module = Module::load(juce::File(desc.fileOrIdentifier), error);
     if (module == nullptr) return nullptr;
     Plugin* p = module->instantiate(desc.hasSharedContainer ? desc.uniqueId : 0);

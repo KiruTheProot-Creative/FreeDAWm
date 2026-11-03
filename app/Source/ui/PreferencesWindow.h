@@ -616,7 +616,11 @@ private:
                 p.section("Formats");
                 p.toggleFn("VST3", [] { return true; }, [](bool) {}, "Always on.");
                 p.toggleFn("VST2", [&host] { return host.vst2Enabled(); }, [this, &host](bool v) { host.setVst2Enabled(v); app_.structureHasChanged(); },
-                           "FreeDAWm's own VST2 host (no Steinberg SDK). 64-bit plugins only. Rescan after turning it on.");
+                           "FreeDAWm's own VST2 host (no Steinberg SDK). Rescan after turning it on.");
+                p.toggleFn("Run VST2 plugins in a separate process", [&host] { return host.vst2Sandboxed(); },
+                           [&host](bool v) { host.setVst2Sandboxed(v); },
+                           "A crashing plugin can't take FreeDAWm down. Uses a bit more CPU. Applies to plugins loaded afterwards.");
+                p.text("32-bit VST2 plugins always run in a separate process (the 32-bit bridge), so they work in 64-bit FreeDAWm.");
                 break;
             }
             case 4: {   // Library

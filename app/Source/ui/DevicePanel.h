@@ -170,7 +170,9 @@ public:
         juce::String info = desc.pluginFormatName + " instrument";
         if (desc.manufacturerName.isNotEmpty()) info += "\n" + desc.manufacturerName;
         info += "\n" + juce::String(inst->plugin().getParameters().size()) + " parameters";
-        g.drawFittedText(info, getLocalBounds().reduced(14, 0).withTrimmedTop(40).withHeight(60), juce::Justification::topLeft, 4);
+        if (desc.descriptiveName.endsWith("(32-bit)")) info += "\n32-bit, runs in the bridge";
+        else if (desc.pluginFormatName == "VST2" && app_.pluginHost->vst2Sandboxed()) info += "\nRuns in a separate process";
+        g.drawFittedText(info, getLocalBounds().reduced(14, 0).withTrimmedTop(40).withHeight(64), juce::Justification::topLeft, 5);
     }
 
     void resized() override {

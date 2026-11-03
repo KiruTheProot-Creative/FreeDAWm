@@ -2,8 +2,10 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "BridgedPlugin.h"
+
 /** Hosts VST 2.x plugins through FreeDAWm's own clean-room interface (vst2/Vst2Abi.h),
-    without Steinberg's VST2 SDK. 64-bit plugins only (a 64-bit host can't load 32-bit code).
+    without Steinberg's VST2 SDK. 32-bit plugins run in the fdm_bridge32 helper process (BridgedPlugin).
 
     Plugs into juce::AudioPluginFormatManager like any other format, so the scanner,
     the known-plugin list and createPluginInstance work unchanged. Format name: "VST2". */
@@ -24,6 +26,12 @@ public:
     juce::StringArray searchPathsForPlugins(const juce::FileSearchPath&, bool recursive, bool allowAsync = false) override;
     juce::FileSearchPath getDefaultLocationsToSearch() override;
     bool requiresUnblockedMessageThreadDuringCreation(const juce::PluginDescription&) const override { return false; }
+
+    /** Run every VST2 plugin in its own bridge process (crash protection). 32-bit plugins always are. */
+    static void setRunInSeparateProcess(bool on);
+    static bool runsInSeparateProcess();
+    /** Which bridge a plugin file needs, or Arch::unknown to load it inside FreeDAWm. */
+    static bridged::Arch bridgeFor(const juce::File& file);
 
     /** Creates an instance synchronously (on the message thread). */
     static std::unique_ptr<juce::AudioPluginInstance> create(const juce::PluginDescription&, double sampleRate, int blockSize,

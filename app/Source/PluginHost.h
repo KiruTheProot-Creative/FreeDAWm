@@ -56,6 +56,9 @@ public:
     /** VST2 support (FreeDAWm's own clean-room host). On by default. */
     bool vst2Enabled() const { return vst2Enabled_; }
     void setVst2Enabled(bool on) { vst2Enabled_ = on; saveSettings(); }
+    /** Run every VST2 plugin in a separate process (crash protection). */
+    bool vst2Sandboxed() const;
+    void setVst2Sandboxed(bool on);
     void setUseSystemFolders(bool on) { useSystemFolders_ = on; saveSettings(); }
     void addFolder(const juce::File& folder);
     void removeFolder(const juce::String& path) { extraFolders_.removeString(path); saveSettings(); }

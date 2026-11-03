@@ -20,6 +20,9 @@ set(FDM_JUCE_PATH "" CACHE PATH
 # The audio engine: plain C++20, no JUCE, no GUI. Everything else builds on it.
 add_subdirectory(core)
 
+# The plugin bridge (separate process for 32-bit and sandboxed plugins). No JUCE.
+add_subdirectory(bridge)
+
 if(FDM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

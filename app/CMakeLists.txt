@@ -11,7 +11,9 @@ target_sources(FreeDAWm PRIVATE
     Source/AppState.cpp
     Source/PluginHost.cpp
     Source/PluginScanner.cpp
-    Source/vst2/Vst2Format.cpp)
+    Source/vst2/Vst2Format.cpp
+    Source/vst2/BridgedPlugin.cpp
+    ../bridge/Ipc.cpp)
 
 target_compile_definitions(FreeDAWm PRIVATE
     JUCE_WEB_BROWSER=0
@@ -39,6 +41,14 @@ target_link_libraries(FreeDAWm
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
 
+# The 64-bit plugin bridge goes next to the app (a 32-bit fdm_bridge32 is built separately, see bridge/CMakeLists.txt).
+add_dependencies(FreeDAWm fdm_bridge)
+add_custom_command(TARGET FreeDAWm POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:fdm_bridge> $<TARGET_FILE_DIR:FreeDAWm>/)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(FreeDAWm PRIVATE rt)
+endif()
+
 # Effects shipped with the DAW: everything in /plugins is copied next to the executable.
 add_custom_command(TARGET FreeDAWm POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -60,19 +70,23 @@ if(FDM_BUILD_TESTS)
     target_compile_definitions(fdm_test_vst2_synth PRIVATE FDM_TEST_SYNTH=1)
 
     juce_add_console_app(fdm_vst2_host_test PRODUCT_NAME "fdm_vst2_host_test")
-    target_sources(fdm_vst2_host_test PRIVATE tests/Vst2HostTest.cpp Source/vst2/Vst2Format.cpp Source/PluginScanner.cpp)
+    target_sources(fdm_vst2_host_test PRIVATE tests/Vst2HostTest.cpp Source/vst2/Vst2Format.cpp Source/vst2/BridgedPlugin.cpp
+                   ../bridge/Ipc.cpp Source/PluginScanner.cpp)
     target_compile_definitions(fdm_vst2_host_test PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=0)
     target_link_libraries(fdm_vst2_host_test PRIVATE fdm::core juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices juce::juce_audio_formats
                           juce::juce_gui_basics juce::juce_gui_extra
                           PUBLIC juce::juce_recommended_config_flags)
-    add_dependencies(fdm_vst2_host_test fdm_test_vst2_plain fdm_test_vst2_shell fdm_test_vst2_crash fdm_test_vst2_hang fdm_test_vst2_synth)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(fdm_vst2_host_test PRIVATE rt)
+    endif()
+    add_dependencies(fdm_vst2_host_test fdm_test_vst2_plain fdm_test_vst2_shell fdm_test_vst2_crash fdm_test_vst2_hang fdm_test_vst2_synth fdm_bridge)
     if(APPLE)
         add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_BUNDLE_DIR:fdm_test_vst2_plain> $<TARGET_BUNDLE_DIR:fdm_test_vst2_shell>
                  $<TARGET_BUNDLE_DIR:fdm_test_vst2_crash> $<TARGET_BUNDLE_DIR:fdm_test_vst2_hang>
-                 $<TARGET_BUNDLE_DIR:fdm_test_vst2_synth>)
+                 $<TARGET_BUNDLE_DIR:fdm_test_vst2_synth> $<TARGET_FILE_DIR:fdm_bridge>)
     else()
         add_test(NAME vst2_host COMMAND fdm_vst2_host_test $<TARGET_FILE:fdm_test_vst2_plain> $<TARGET_FILE:fdm_test_vst2_shell>
                  $<TARGET_FILE:fdm_test_vst2_crash> $<TARGET_FILE:fdm_test_vst2_hang>
-                 $<TARGET_FILE:fdm_test_vst2_synth>)
+                 $<TARGET_FILE:fdm_test_vst2_synth> $<TARGET_FILE_DIR:fdm_bridge>)
     endif()
 endif()
