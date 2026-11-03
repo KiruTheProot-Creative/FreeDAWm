@@ -71,6 +71,7 @@ public:
                                                int blockSize, juce::String& error);
 
     void saveSettings();
+    juce::AudioPluginFormat* formatFor(const juce::String& name) const;
 
 private:
     class ScanJob;

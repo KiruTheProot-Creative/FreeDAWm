@@ -1,6 +1,8 @@
 #include "Vst2Format.h"
 
 #include <cstring>
+#include <map>
+#include <mutex>
 
 #include "Vst2Abi.h"
 
@@ -10,6 +12,21 @@ namespace {
 
 thread_local i32  tlShellIdToLoad = 0;        // answered to host::currentId while a shell's sub-plugin is created
 thread_local bool tlInAudioCallback = false;
+thread_local char tlPluginDirectory[1024] = {};  // answered to host::getDirectory while a plugin is created
+
+/** Answered to host::getTime before an instance exists: some plugins read it without checking for null. */
+TimeInfo& defaultTime() {
+    static TimeInfo t = [] {
+        TimeInfo x {};
+        x.sampleRate = 44100.0;
+        x.tempo = 120.0;
+        x.timeSigNumerator = 4;
+        x.timeSigDenominator = 4;
+        x.flags = time::tempoValid | time::timeSigValid | time::ppqValid;
+        return x;
+    }();
+    return t;
+}
 
 iptr FDM_VST2_CALL hostCallback(Plugin* p, i32 opcode, i32 index, iptr value, void* ptr, float opt);
 
@@ -47,7 +64,24 @@ struct Module {
     std::unique_ptr<juce::DynamicLibrary> library;
     EntryFn entry = nullptr;
 
+    /** Libraries are loaded once and never unloaded: many plugins (Native Instruments, for one) keep
+        background threads running after they're closed, and unloading their code under those threads crashes. */
     static std::shared_ptr<Module> load(const juce::File& file, juce::String& error) {
+        static std::mutex lock;
+        static std::map<juce::String, std::shared_ptr<Module>> cache;
+        const std::lock_guard<std::mutex> guard(lock);
+        if (auto it = cache.find(file.getFullPathName()); it != cache.end()) return it->second;
+        auto m = loadUncached(file, error);
+        if (m != nullptr) {
+            m->directory = file.getParentDirectory().getFullPathName();
+            cache[file.getFullPathName()] = m;
+        }
+        return m;
+    }
+
+    juce::String directory;
+
+    static std::shared_ptr<Module> loadUncached(const juce::File& file, juce::String& error) {
         const auto binary = binaryFor(file);
         if (!binary.existsAsFile()) { error = "The plugin file is missing."; return nullptr; }
         auto m = std::make_shared<Module>();
@@ -64,6 +98,7 @@ struct Module {
 
     Plugin* instantiate(i32 shellId) {
         tlShellIdToLoad = shellId;
+        directory.copyToUTF8(tlPluginDirectory, sizeof(tlPluginDirectory));
         Plugin* p = entry(hostCallback);
         tlShellIdToLoad = 0;
         if (p == nullptr || p->magic != kMagic) return nullptr;
@@ -459,6 +494,8 @@ iptr genericHost(i32 opcode, i32 index, iptr value, void* ptr, float opt) {
         case host::getAutomationState: return 1;
         case host::getLanguage:      return 1;
         case host::getVendorVersion: return 100;
+        case host::getTime:          return reinterpret_cast<iptr>(&defaultTime());
+        case host::getDirectory:     return reinterpret_cast<iptr>(tlPluginDirectory);
         case host::getVendor:
         case host::getProduct:
             if (ptr != nullptr) std::strcpy(static_cast<char*>(ptr), "FreeDAWm");

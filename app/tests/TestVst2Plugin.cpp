@@ -104,6 +104,15 @@ void FDM_VST2_CALL processReplacing(Plugin* p, float** in, float** out, i32 fram
 
 EXPORT Plugin* VSTPluginMain(HostFn host) {
     if (host(nullptr, host::version, 0, 0, nullptr, 0.0f) < 2400) return nullptr;
+#ifdef FDM_TEST_CRASH
+    volatile int* nowhere = nullptr;                     // misbehaves like a broken plugin would
+    *nowhere = 1;
+#endif
+#ifdef FDM_TEST_HANG
+    for (;;) {}
+#endif
+    // Like some real plugins, read the transport before any instance exists.
+    if (auto* t0 = reinterpret_cast<TimeInfo*>(host(nullptr, host::getTime, 0, 0, nullptr, 0.0f))) (void) t0->tempo;
     auto* t = new TestPlugin();
     t->host = host;
 #ifdef FDM_TEST_SHELL

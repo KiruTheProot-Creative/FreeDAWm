@@ -1,5 +1,6 @@
 #include "PluginHost.h"
 
+#include "PluginScanner.h"
 #include "vst2/Vst2Format.h"
 
 // ===========================================================================
@@ -66,39 +67,72 @@ PluginWindow::PluginWindow(Vst3Effect& effect, std::function<void()> onCloseRequ
 class PluginHost::ScanJob : public juce::ThreadWithProgressWindow {
 public:
     ScanJob(PluginHost& host, std::function<void(int)> done)
-        : juce::ThreadWithProgressWindow("Scanning for VST3 plugins...", true, true),
+        : juce::ThreadWithProgressWindow("Scanning for plugins...", true, true),
           host_(host), onDone_(std::move(done)) {}
 
     void run() override {
-        for (int i = 0; i < host_.formatManager.getNumFormats() && !threadShouldExit(); ++i) {
+        const auto exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        auto& known = host_.knownPlugins;
+
+        // Forget plugins whose files are gone.
+        for (auto& d : known.getTypes())
+            if (auto* f = host_.formatFor(d.pluginFormatName); f != nullptr && !f->doesPluginStillExist(d)) known.removeType(d);
+
+        struct Job { juce::AudioPluginFormat* format; juce::String file; };
+        std::vector<Job> jobs;
+        setStatusMessage("Looking for plugin files...");
+        for (int i = 0; i < host_.formatManager.getNumFormats(); ++i) {
             auto* format = host_.formatManager.getFormat(i);
             const bool wanted = format->getName() == "VST3" || (format->getName() == Vst2Format::formatName() && host_.vst2Enabled());
             if (!wanted) continue;
-
-            juce::PluginDirectoryScanner scanner(host_.knownPlugins, *format, host_.searchPaths(format->getName()), true,
-                                                 host_.deadMansPedalFile());
-            juce::String name;
-            while (!threadShouldExit() && scanner.scanNextFile(true, name)) {
-                setProgress(scanner.getProgress());
-                setStatusMessage(name);
+            for (auto& file : format->searchPathsForPlugins(host_.searchPaths(format->getName()), true, true)) {
+                if (known.getBlacklistedFiles().contains(file) || known.isListingUpToDate(file, *format)) continue;
+                jobs.push_back({format, file});
             }
         }
+
+        // Each file is loaded in its own process: a crash or hang there only costs that plugin.
+        for (size_t i = 0; i < jobs.size() && !threadShouldExit(); ++i) {
+            const auto& job = jobs[i];
+            setProgress(static_cast<double>(i) / static_cast<double>(jobs.size()));
+            setStatusMessage(job.format->getName() + ":  " + juce::File(job.file).getFileName());
+            auto result = pluginscan::scanInChildProcess(exe, job.format->getName(), job.file, kTimeoutMs,
+                                                         [this] { return threadShouldExit(); });
+            if (result.aborted) break;
+            if (!result.ok) {
+                known.addToBlacklist(job.file);
+                problems_.add(juce::File(job.file).getFileName() + " (" + job.format->getName() + "): " + result.error);
+                continue;
+            }
+            for (auto& d : known.getTypes())
+                if (d.fileOrIdentifier == job.file && d.pluginFormatName == job.format->getName()) known.removeType(d);
+            for (auto* d : result.found) known.addType(*d);
+        }
+        setProgress(1.0);
     }
 
     void threadComplete(bool /*userPressedCancel*/) override {
         host_.saveSettings();
         const int found = host_.availableEffects().size();
         auto done = std::move(onDone_);
+        const auto problems = problems_;
         // We are owned by the host; let the current call stack unwind before destroying ourselves.
-        juce::MessageManager::callAsync([&host = host_, found, done] {
+        juce::MessageManager::callAsync([&host = host_, found, done, problems] {
             host.scanJob_.reset();
+            if (!problems.isEmpty())
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Some plugins were skipped",
+                    "These plugins crashed or hung while being scanned. FreeDAWm kept running and skipped them:\n\n"
+                    + problems.joinIntoString("\n")
+                    + "\n\nTo try again, use Preferences > Plugins > Blocked plugins > Unblock all, then rescan.");
             if (done) done(found);
         });
     }
 
 private:
+    static constexpr int kTimeoutMs = 180 * 1000;          // big instrument libraries can take a while the first time
     PluginHost& host_;
     std::function<void(int)> onDone_;
+    juce::StringArray problems_;
 };
 
 PluginHost::PluginHost(juce::PropertiesFile* settings) : settings_(settings) {
@@ -211,4 +245,10 @@ std::unique_ptr<fdm::IEffect> PluginHost::createEffect(const juce::PluginDescrip
         return nullptr;
     }
     return std::make_unique<Vst3Effect>(std::move(instance));
+}
+
+juce::AudioPluginFormat* PluginHost::formatFor(const juce::String& name) const {
+    for (int i = 0; i < formatManager.getNumFormats(); ++i)
+        if (formatManager.getFormat(i)->getName() == name) return formatManager.getFormat(i);
+    return nullptr;
 }

@@ -39,6 +39,9 @@ FreeDAWm hosts VST 2.x plugins without Steinberg's VST2 SDK. `app/Source/vst2/Vs
 - `app/tests/` holds a small VST2 plugin and a host test that loads it.
 - VST2 can be switched off in Preferences > Plugins.
 
+## Plugin scanning
+Each plugin file (VST3 and VST2) is scanned in a separate process: FreeDAWm re-launches itself with `--fdm-scan-plugin`. A plugin that crashes or hangs (3-minute limit) only takes that helper process down. It's then listed under Preferences > Plugins > Blocked plugins, and you can unblock it to retry. VST2 libraries stay loaded once opened, because some plugins keep threads running after they're closed.
+
 VST is a trademark of Steinberg Media Technologies GmbH. FreeDAWm isn't affiliated with or endorsed by Steinberg.
 
 ## Build

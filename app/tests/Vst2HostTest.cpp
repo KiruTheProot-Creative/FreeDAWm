@@ -1,6 +1,7 @@
 // Loads FreeDAWm's test VST2 plugins through the clean-room host and checks everything end to end.
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "../Source/PluginScanner.h"
 #include "../Source/vst2/Vst2Format.h"
 
 namespace {
@@ -18,7 +19,13 @@ float runOnce(juce::AudioPluginInstance& p, float input, juce::MidiBuffer* midi 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 3) { std::printf("usage: %s <plugin> <shell plugin>\n", argv[0]); return 2; }
+    juce::StringArray args;
+    for (int i = 0; i < argc; ++i) args.add(argv[i]);
+    if (pluginscan::isWorkerCommandLine(args)) {                   // we are our own scan worker
+        juce::ScopedJuceInitialiser_GUI juce;
+        return pluginscan::runWorker(args);
+    }
+    if (argc < 5) { std::printf("usage: %s <plugin> <shell> <crashing plugin> <hanging plugin>\n", argv[0]); return 2; }
     juce::ScopedJuceInitialiser_GUI juce;
     Vst2Format format;
 
@@ -105,6 +112,30 @@ int main(int argc, char** argv) {
         juce::OwnedArray<juce::PluginDescription> none;
         format.findAllTypesForFile(none, "/nonexistent/thing.so");
         EXPECT(none.isEmpty());
+    }
+
+    std::printf("[ .. ] scanning in a child process\n");
+    {
+        const auto self = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        auto ok = pluginscan::scanInChildProcess(self, "VST2", argv[1], 30000, {});
+        EXPECT(ok.ok && ok.found.size() == 1 && ok.found[0]->name == "FDM Test Gain");
+
+        auto shellResult = pluginscan::scanInChildProcess(self, "VST2", argv[2], 30000, {});
+        EXPECT(shellResult.ok && shellResult.found.size() == 2);
+
+        auto crashed = pluginscan::scanInChildProcess(self, "VST2", argv[3], 30000, {});
+        EXPECT(!crashed.ok && !crashed.timedOut && crashed.error.contains("crashed"));
+        std::printf("    crashing plugin -> %s\n", crashed.error.toRawUTF8());
+
+        const auto t0 = juce::Time::getMillisecondCounter();
+        auto hung = pluginscan::scanInChildProcess(self, "VST2", argv[4], 1500, {});
+        EXPECT(!hung.ok && hung.timedOut);
+        EXPECT(juce::Time::getMillisecondCounter() - t0 < 6000);
+        std::printf("    hanging plugin  -> %s\n", hung.error.toRawUTF8());
+
+        bool abortNow = false;
+        auto aborted = pluginscan::scanInChildProcess(self, "VST2", argv[4], 30000, [&] { return std::exchange(abortNow, true); });
+        EXPECT(aborted.aborted);
     }
 
     std::printf(failures == 0 ? "VST2 host: all checks passed\n" : "VST2 host: %d check(s) failed\n", failures);

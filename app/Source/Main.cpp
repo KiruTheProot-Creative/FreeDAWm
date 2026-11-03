@@ -1,4 +1,5 @@
 #include "AppState.h"
+#include "PluginScanner.h"
 #include "Theme.h"
 #include "ui/MainComponent.h"
 
@@ -9,6 +10,13 @@ public:
     bool moreThanOneInstanceAllowed() override          { return true; }
 
     void initialise(const juce::String& commandLine) override {
+        // Plugin scan worker: scan one file, write the result, exit. No audio device, no window.
+        if (const auto args = juce::StringArray::fromTokens(commandLine, true); pluginscan::isWorkerCommandLine(args)) {
+            setApplicationReturnValue(pluginscan::runWorker(args));
+            quit();
+            return;
+        }
+
         state_ = std::make_unique<AppState>();
         theme::apply(state_->prefs->getInt("accent"), state_->prefs->getInt("contrast"));   // before any colour is used
         lookAndFeel_ = std::make_unique<FdmLookAndFeel>();
