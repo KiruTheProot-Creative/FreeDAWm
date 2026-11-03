@@ -4,6 +4,7 @@
 
 #include "Common.h"
 #include "PluginHost.h"
+#include "EnginePlayHead.h"
 #include "PluginInstrument.h"
 #include "Prefs.h"
 
@@ -122,6 +123,7 @@ public:
     fdm::Engine                 engine;
     juce::ApplicationProperties properties;
     std::unique_ptr<Prefs>      prefs;
+    EnginePlayHead              playHead{engine};      // tempo/position for every hosted plugin
     std::unique_ptr<PluginHost> pluginHost;
     juce::AudioDeviceManager    deviceManager;
 

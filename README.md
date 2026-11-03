@@ -23,6 +23,7 @@ A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-ma
   - Or use "Load plugin..." on the instrument card in the FX Chain tab.
   - Notes reach the plugin sample-accurately, while the plugin still renders normal-sized blocks.
   - The plugin's state is saved with the project.
+- **Tempo sync**: every plugin, effect or instrument, VST3 or VST2, gets the song's tempo, position, bar, time signature, play state and loop region. Synced delays, LFOs and arpeggiators follow the song.
   - A temporary Drum Rack and Poly Synth remain as fallbacks.
 - **Plugins**: VST3, and VST2 through FreeDAWm's own clean-room host (see below). No effects or instruments are built in.
 - **Projects** (`.fdm`; sound files are referenced by path) and **WAV export** of the whole timeline (16/24/32-bit).

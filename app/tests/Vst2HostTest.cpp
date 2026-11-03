@@ -1,6 +1,7 @@
 // Loads FreeDAWm's test VST2 plugins through the clean-room host and checks everything end to end.
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "../Source/EnginePlayHead.h"
 #include "../Source/PluginInstrument.h"
 #include "../Source/PluginScanner.h"
 #include "../Source/vst2/Vst2Format.h"
@@ -151,6 +152,8 @@ int main(int argc, char** argv) {
                 fdm::Engine engine;
                 engine.prepare(48000.0, 512);
                 engine.bpm.set(120.0f);                                  // 25 samples per tick
+                EnginePlayHead playHead(engine);
+                plugin->setPlayHead(&playHead);
                 PluginInstrument instrument(std::move(plugin));
                 instrument.prepare(48000.0, 512);
                 const int ch = engine.addChannel(fdm::InstrumentType::PolySynth);
@@ -171,6 +174,20 @@ int main(int argc, char** argv) {
                 std::printf("    note sounds from frame %d to %d\n", first, last);
                 EXPECT(first == 24175);
                 EXPECT(std::abs(last - (24175 + 6000 - 1)) <= 1);
+
+                // Tempo sync: what the plugin saw during the render (last block of bar 1)
+                auto& p = instrument.plugin();
+                EXPECT_NEAR(p.getHostedParameter(1)->getValue() * 1000.0f, 120.0f, 0.01f);
+                EXPECT_NEAR(p.getHostedParameter(4)->getValue(), 1.0f, 1e-6);           // playing
+                const float ppqSeen = p.getHostedParameter(3)->getValue() * 1000.0f;
+                EXPECT(ppqSeen > 3.9f && ppqSeen < 4.0f);                               // just before the end of bar 1
+                std::printf("    plugin saw tempo %.1f, position %.3f quarter notes, playing\n",
+                            static_cast<double>(p.getHostedParameter(1)->getValue() * 1000.0f), static_cast<double>(ppqSeen));
+
+                // A tempo change reaches the plugin on the next block.
+                engine.bpm.set(137.0f);
+                engine.renderOffline(fdm::Engine::kRenderArrangement, 1, 0.0f, L, R);
+                EXPECT_NEAR(p.getHostedParameter(1)->getValue() * 1000.0f, 137.0f, 0.01f);
                 engine.channel(ch).external.store(nullptr);
             }
         }

@@ -72,6 +72,21 @@ public:
     /** Frees every sample. The audio thread must NOT be running. */
     void clearSamples();
 
+    // ---- transport info for plugins ---------------------------------------
+    /** Where the transport is at the start of the block being processed. Written by the audio
+        thread at the start of every block; plugins processed in that block read it (same thread). */
+    struct BlockTransport {
+        bool    playing = false;
+        double  bpm = 120.0;
+        double  ppq = 0.0;               // position in quarter notes
+        int64_t samplePos = 0;           // position in samples at the current tempo
+        int     timeSigNumerator = 4, timeSigDenominator = 4;
+        bool    looping = false;
+        double  loopStartPpq = 0.0, loopEndPpq = 0.0;
+        double  sampleRate = 48000.0;
+    };
+    const BlockTransport& blockTransport() const { return blockTransport_; }
+
     // ---- channels & mixer ------------------------------------------------
     Channel& channel(int i) { return channels_[static_cast<size_t>(i)]; }
     Strip&   returnStrip(int i) { return returns_[static_cast<size_t>(i)]; }
@@ -151,6 +166,8 @@ private:
     std::atomic<int64_t> positionTicks_{0};
     std::atomic<int64_t> playStartTick_{0};   // where play() begins (the playhead / start marker)
     std::atomic<int64_t> seekRequest_{-1};
+    BlockTransport       blockTransport_;
+    void updateBlockTransport();
 
     // live MIDI queue: many producers (spin-locked), one consumer (audio thread)
     static constexpr uint32_t kLiveCap = 1024;

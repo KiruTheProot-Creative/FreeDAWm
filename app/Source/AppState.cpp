@@ -189,6 +189,7 @@ juce::String AppState::loadEffect(fdm::Strip& strip, int slot, const juce::Plugi
     juce::String error;
     auto effect = pluginHost->createEffect(description, engine.sampleRate(), blockSize_, error);
     if (effect == nullptr) return error;
+    static_cast<Vst3Effect*>(effect.get())->plugin().setPlayHead(&playHead);       // tempo sync
 
     if (savedState != nullptr && savedState->getSize() > 0)
         static_cast<Vst3Effect*>(effect.get())->plugin().setStateInformation(savedState->getData(),
@@ -237,6 +238,7 @@ juce::String AppState::loadInstrument(int channel, const juce::PluginDescription
     juce::String error;
     auto plugin = pluginHost->createInstrument(description, engine.sampleRate(), blockSize_, error);
     if (plugin == nullptr) return error;
+    plugin->setPlayHead(&playHead);                                                  // tempo sync
     if (savedState != nullptr && savedState->getSize() > 0)
         plugin->setStateInformation(savedState->getData(), static_cast<int>(savedState->getSize()));
 

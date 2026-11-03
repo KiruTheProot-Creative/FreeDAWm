@@ -677,3 +677,25 @@ TEST(whole_block_instruments_receive_live_notes_when_stopped) {
     CHECK(on != nullptr && on->sample == 0);
     CHECK(inst.renders == 4);
 }
+
+TEST(block_transport_reports_tempo_and_position_for_plugins) {
+    Engine e;
+    e.prepare(kSr, 512);
+    e.bpm.set(120.0f);                                   // one beat = 24000 frames
+    Rendered out;
+    run(e, 512, out, 512);
+    CHECK(!e.blockTransport().playing);
+    e.setPlayhead(4 * kTicksPerBar);                     // bar 5 = 16 quarter notes
+    run(e, 512, out, 512);
+    CHECK_NEAR(e.blockTransport().ppq, 16.0, 1e-9);
+    e.play();
+    run(e, 24000, out, 500);                             // half a block size that doesn't divide a tick evenly
+    // the block that just started was at frame 23500 after play: 16 + 23500/24000 quarter notes
+    CHECK(e.blockTransport().playing);
+    CHECK_NEAR(e.blockTransport().ppq, 16.0 + 23500.0 / 24000.0, 0.002);
+    CHECK_NEAR(e.blockTransport().bpm, 120.0, 1e-9);
+    CHECK_NEAR(static_cast<double>(e.blockTransport().samplePos), (16.0 * 24000.0) + 23500.0, 50.0);
+    e.bpm.set(90.0f);
+    run(e, 500, out, 500);
+    CHECK_NEAR(e.blockTransport().bpm, 90.0, 1e-6);
+}

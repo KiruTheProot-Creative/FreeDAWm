@@ -410,7 +410,13 @@ private:
                 if (auto ts = pos->getTimeSignature()) { t.timeSigNumerator = ts->numerator; t.timeSigDenominator = ts->denominator; }
                 if (auto bar = pos->getPpqPositionOfLastBarStart()) { t.barStartPos = *bar; t.flags |= time::barsValid; }
                 if (pos->getIsPlaying()) t.flags |= time::playing;
-                if (pos->getIsLooping()) t.flags |= time::looping;
+                if (pos->getIsLooping()) {
+                    t.flags |= time::looping;
+                    if (auto loop = pos->getLoopPoints()) { t.loopStartPos = loop->ppqStart; t.loopEndPos = loop->ppqEnd; t.flags |= time::loopValid; }
+                }
+                if (auto secs = pos->getTimeInSeconds()) { t.nanoSeconds = *secs * 1.0e9; t.flags |= time::nanosValid; }
+                const bool playingNow = pos->getIsPlaying();
+                if (playingNow != lastPlaying_) { t.flags |= time::changed; lastPlaying_ = playingNow; }
                 if (auto q = pos->getPpqPosition()) { t.ppqPos = *q; return; }
             }
         t.ppqPos = t.sampleRate > 0.0 ? t.samplePos / t.sampleRate * t.tempo / 60.0 : 0.0;
@@ -442,7 +448,7 @@ private:
     std::shared_ptr<Module> module_;          // keeps the library loaded while the plugin exists
     Plugin* p_;
     juce::PluginDescription desc_;
-    bool active_ = false, acceptsMidi_ = false, producesMidi_ = false;
+    bool active_ = false, acceptsMidi_ = false, producesMidi_ = false, lastPlaying_ = false;
     int maxBlock_ = 512;
     std::vector<std::vector<float>> ins_, outs_;
     std::vector<float*> inPtrs_, outPtrs_;

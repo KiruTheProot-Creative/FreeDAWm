@@ -26,7 +26,7 @@ namespace {
 struct TestPlugin {
     Plugin vst {};
     HostFn host = nullptr;
-    float params[3] = {0.5f, 0.0f, 0.0f};
+    float params[5] = {0.5f, 0.0f, 0.0f, 0.0f, 0.0f};    // synth only: [3] = ppq / 1000, [4] = playing
     float multiplier = 1.0f;
     int notes = 0;
     int program = 0;
@@ -113,8 +113,11 @@ float FDM_VST2_CALL getParameter(Plugin* p, i32 index) { return self(p)->params[
 
 void FDM_VST2_CALL processReplacing(Plugin* p, float** in, float** out, i32 frames) {
     TestPlugin* t = self(p);
-    if (auto* time = reinterpret_cast<TimeInfo*>(t->host(p, host::getTime, 0, 0, nullptr, 0.0f)))
+    if (auto* time = reinterpret_cast<TimeInfo*>(t->host(p, host::getTime, 0, 0, nullptr, 0.0f))) {
         t->params[1] = static_cast<float>(time->tempo / 1000.0);
+        t->params[3] = static_cast<float>(time->ppqPos / 1000.0);
+        t->params[4] = (time->flags & time::playing) != 0 ? 1.0f : 0.0f;
+    }
 #ifdef FDM_TEST_SYNTH
     // An "instrument": outputs 0.25 while any note is held, switching exactly at each event's frame.
     (void) in;
@@ -161,6 +164,7 @@ EXPORT Plugin* VSTPluginMain(HostFn host) {
     v.numOutputs = 2;
     v.flags = flag::canReplace | flag::chunks;
 #ifdef FDM_TEST_SYNTH
+    v.numParams = 5;
     v.flags |= flag::isInstrument;
     v.numInputs = 0;
 #endif

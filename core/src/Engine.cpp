@@ -230,6 +230,21 @@ void Engine::stopTransportInternal() {
     positionTicks_.store(playStartTick_.load(std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
+void Engine::updateBlockTransport() {
+    auto& t = blockTransport_;
+    t.playing = playing_;
+    t.bpm = static_cast<double>(bpm.get());
+    t.sampleRate = sampleRate_;
+    // The next tick (globalTick_) fires after countdown_ samples, so we are that far before it.
+    const double ticks = playing_ ? static_cast<double>(globalTick_) - std::max(0.0, countdown_) / samplesPerTick()
+                                  : static_cast<double>(playStartTick_.load(std::memory_order_relaxed));
+    t.ppq = std::max(0.0, ticks) / kPPQ;
+    t.samplePos = static_cast<int64_t>(std::llround(t.ppq * 60.0 / t.bpm * sampleRate_));
+    t.looping = loopEnabled.load(std::memory_order_relaxed);
+    t.loopStartPpq = static_cast<double>(loopStartTick.load(std::memory_order_relaxed)) / kPPQ;
+    t.loopEndPpq = static_cast<double>(loopEndTick.load(std::memory_order_relaxed)) / kPPQ;
+}
+
 void Engine::setPlayhead(int64_t ticks) {
     ticks = std::max<int64_t>(0, ticks);
     playStartTick_.store(ticks, std::memory_order_relaxed);
@@ -549,6 +564,7 @@ void Engine::mix(float* outL, float* outR, int n) {
 void Engine::processChunk(float* outL, float* outR, int n) {
     setBlockOffsets(0);
     applyTransportCommand();
+    updateBlockTransport();
     drainLiveEvents();
 
     for (int c = 0; c < kMaxChannels; ++c) {
