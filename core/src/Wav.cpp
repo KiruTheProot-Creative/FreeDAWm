@@ -20,7 +20,7 @@ uint32_t get32(const uint8_t* p) { return static_cast<uint32_t>(p[0]) | (static_
 }  // namespace
 
 bool writeWav(const std::string& path, const std::vector<float>& left, const std::vector<float>& right,
-              int sampleRate, WavFormat format) {
+              int sampleRate, WavFormat format, bool dither) {
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
 
@@ -51,8 +51,8 @@ bool writeWav(const std::string& path, const std::vector<float>& left, const std
         x = std::clamp(x, -1.0f, 1.0f);
         switch (format) {
             case WavFormat::Pcm16: {
-                const float dither = (rand01() - rand01()) / 32768.0f;       // TPDF, +-1 LSB
-                const int v = static_cast<int>(std::lround(std::clamp(x + dither, -1.0f, 1.0f) * 32767.0f));
+                const float tpdf = dither ? (rand01() - rand01()) / 32768.0f : 0.0f;       // TPDF, +-1 LSB
+                const int v = static_cast<int>(std::lround(std::clamp(x + tpdf, -1.0f, 1.0f) * 32767.0f));
                 put16(f, static_cast<uint16_t>(static_cast<int16_t>(v)));
                 break;
             }

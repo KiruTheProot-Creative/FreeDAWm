@@ -399,7 +399,7 @@ void Engine::clearSamples() {
 
 void Engine::renderAudioClips(Channel& ch, float* L, float* R, int count, double tickPos) {
     const double spt = samplesPerTick();
-    constexpr double kFade = 64.0;                      // frames of fade at clip edges, against clicks
+    const double kFade = std::max(1.0, static_cast<double>(audioFadeMs.load(std::memory_order_relaxed)) * sampleRate_ / 1000.0);
     for (int c = 0; c < kMaxPlacements; ++c) {
         AudioPlacement p;
         if (!ch.getAudioClip(c, p)) continue;

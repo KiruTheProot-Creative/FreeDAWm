@@ -54,6 +54,8 @@ public:
     std::atomic<bool> loopEnabled{false};
     std::atomic<int>  loopStartTick{0};
     std::atomic<int>  loopEndTick{kTicksPerBar * 4};
+    /** Fade-in/out at the edges of audio clips, against clicks. */
+    std::atomic<float> audioFadeMs{1.5f};
 
     /** Moves the playhead (the transport keeps playing if it is). */
     void    setPlayhead(int64_t ticks);

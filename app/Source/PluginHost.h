@@ -55,6 +55,7 @@ public:
     bool useSystemFolders() const { return useSystemFolders_; }
     void setUseSystemFolders(bool on) { useSystemFolders_ = on; saveSettings(); }
     void addFolder(const juce::File& folder);
+    void removeFolder(const juce::String& path) { extraFolders_.removeString(path); saveSettings(); }
     const juce::StringArray& extraFolders() const { return extraFolders_; }
 
     /** Scans in the background with a progress window; `onDone(numPluginsFound)` runs on the message thread. */

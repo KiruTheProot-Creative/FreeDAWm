@@ -14,8 +14,18 @@ struct TimelineMetrics {
     int width() const { return tickToX(static_cast<int64_t>(totalBars) * fdm::kTicksPerBar); }
 
     /** Grid used when dragging: adapts to the zoom level, like Ableton. */
+    int snapMode = 0;      // Preferences > Editing > Snap: 0 adaptive, 1 bar, 2 beat, 3 1/8, 4 1/16, 5 off
+
     int snapTicks(bool fine) const {
         if (fine) return fdm::kTicksPerStep;
+        switch (snapMode) {
+            case 1: return fdm::kTicksPerBar;
+            case 2: return fdm::kTicksPerBeat;
+            case 3: return fdm::kTicksPerBeat / 2;
+            case 4: return fdm::kTicksPerStep;
+            case 5: return 1;
+            default: break;
+        }
         if (pxPerBar >= 420.0) return fdm::kTicksPerBeat / 2;
         if (pxPerBar >= 170.0) return fdm::kTicksPerBeat;
         return fdm::kTicksPerBar;
@@ -133,13 +143,13 @@ public:
 
         const int rows = static_cast<int>(channels.size());
         for (int r = 0; r < rows; ++r) {
-            const int y = r * theme::kTrackHeight;
-            if (y > clipB.getBottom() || y + theme::kTrackHeight < clipB.getY()) continue;
+            const int y = r * theme::trackHeight;
+            if (y > clipB.getBottom() || y + theme::trackHeight < clipB.getY()) continue;
             const bool selected = app_.selection().kind == AppState::Selection::Kind::Channel && app_.selection().index == channels[static_cast<size_t>(r)];
             g.setColour(selected ? theme::panel.brighter(0.05f) : (r % 2 ? theme::panel.darker(0.25f) : theme::panel.darker(0.45f)));
-            g.fillRect(0, y, getWidth(), theme::kTrackHeight);
+            g.fillRect(0, y, getWidth(), theme::trackHeight);
             g.setColour(juce::Colours::black);
-            g.drawHorizontalLine(y + theme::kTrackHeight - 1, 0.0f, static_cast<float>(getWidth()));
+            g.drawHorizontalLine(y + theme::trackHeight - 1, 0.0f, static_cast<float>(getWidth()));
         }
 
         if (app_.engine.loopEnabled.load()) {
@@ -178,12 +188,12 @@ public:
         }
 
         if (dropRow_ >= 0) {                                       // drag-and-drop ghost
-            const int y = dropRow_ * theme::kTrackHeight;
+            const int y = dropRow_ * theme::trackHeight;
             const int x = m_.tickToX(dropTick_);
             g.setColour(theme::accentHi.withAlpha(0.25f));
-            g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::kTrackHeight - 6), 3.0f);
+            g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::trackHeight - 6), 3.0f);
             g.setColour(theme::accentHi);
-            g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::kTrackHeight - 6), 3.0f, 1.5f);
+            g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(y + 3), 120.0f, static_cast<float>(theme::trackHeight - 6), 3.0f, 1.5f);
             g.setFont(theme::labelFont(10.5f));
             g.drawText(dropRow_ >= rows ? "NEW AUDIO TRACK" : "DROP HERE", x + 6, y + 6, 110, 14, juce::Justification::centredLeft);
         }
@@ -196,7 +206,7 @@ public:
     // ---- mouse ---------------------------------------------------------------------
     void mouseDown(const juce::MouseEvent& e) override {
         grabKeyboardFocus();
-        const int row = e.y / theme::kTrackHeight;
+        const int row = e.y / theme::trackHeight;
         if (row < 0 || row >= static_cast<int>(channels.size())) return;
         const int channel = channels[static_cast<size_t>(row)];
         auto& ch = app_.engine.channel(channel);
@@ -227,7 +237,7 @@ public:
     }
 
     void mouseDoubleClick(const juce::MouseEvent& e) override {
-        const int row = e.y / theme::kTrackHeight;
+        const int row = e.y / theme::trackHeight;
         if (row < 0 || row >= static_cast<int>(channels.size()) || e.mods.isPopupMenu()) return;
         int index; Item it;
         if (findItem(row, e.x, index, it)) return;
@@ -258,7 +268,7 @@ public:
     }
 
     void mouseMove(const juce::MouseEvent& e) override {
-        const int row = e.y / theme::kTrackHeight;
+        const int row = e.y / theme::trackHeight;
         int index; Item it;
         bool resize = false;
         if (findItem(row, e.x, index, it)) resize = e.x > itemRect(row, it).getRight() - 7.0f;
@@ -267,9 +277,29 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override {
         if (selChannel_ < 0) return false;
-        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { removeSelected(); return true; }
-        if (key == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) { duplicateSelected(); return true; }
+        const auto action = app_.prefs->actionFor(key);
+        if (action == "delete" || key == juce::KeyPress::backspaceKey) { removeSelected(); return true; }
+        if (action == "duplicate") { duplicateSelected(); return true; }
         return false;
+    }
+
+    void deleteSelectedClip() { removeSelected(); }
+    void duplicateSelectedClip() { duplicateSelected(); }
+
+    std::function<void(double factor)> onZoom;
+
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override {
+        const bool wheelZooms = app_.prefs->getInt("wheelZoom") == 1;
+        const bool zoom = wheelZooms ? !e.mods.isShiftDown() : (e.mods.isCtrlDown() || e.mods.isCommandDown());
+        if (zoom && onZoom) { onZoom(w.deltaY > 0 ? 1.15 : 1.0 / 1.15); return; }
+        if (wheelZooms && e.mods.isShiftDown()) {           // Shift + wheel scrolls sideways
+            auto d = w;
+            d.deltaX = w.deltaY;
+            d.deltaY = 0.0f;
+            Component::mouseWheelMove(e.withNewPosition(e.position), d);
+            return;
+        }
+        Component::mouseWheelMove(e, w);
     }
 
     // ---- drag and drop: samples from the explorer, files from the desktop ----------
@@ -319,7 +349,7 @@ private:
     juce::Rectangle<float> itemRect(int row, const Item& it) const {
         const float x = static_cast<float>(m_.tickToX(it.start));
         const float w = std::max(4.0f, static_cast<float>(m_.tickToX(static_cast<int64_t>(it.start) + it.length)) - x);
-        return {x, static_cast<float>(row * theme::kTrackHeight + 3), w, static_cast<float>(theme::kTrackHeight - 6)};
+        return {x, static_cast<float>(row * theme::trackHeight + 3), w, static_cast<float>(theme::trackHeight - 6)};
     }
 
     bool findItem(int row, int x, int& index, Item& out) const {
@@ -444,8 +474,14 @@ private:
         auto& clip = ch.clips[static_cast<size_t>(slot)];
         int lengthTicks = fdm::kTicksPerBar;
         if (!clip.exists.load()) {
-            clip.create(1);
-            std::snprintf(clip.name, sizeof(clip.name), "Clip %d", slot + 1);
+            const int bars = juce::jlimit(1, 8, app_.prefs->getInt("defaultClipBars") + 1);
+            clip.create(bars);
+            lengthTicks = bars * fdm::kTicksPerBar;
+            switch (app_.prefs->getInt("clipNaming")) {
+                case 1:  std::snprintf(clip.name, sizeof(clip.name), "%s", ch.name); break;
+                case 2:  std::snprintf(clip.name, sizeof(clip.name), "%.24s %d", ch.name, slot + 1); break;
+                default: std::snprintf(clip.name, sizeof(clip.name), "Clip %d", slot + 1); break;
+            }
         } else {
             lengthTicks = clip.lengthTicks.load();
         }
@@ -470,7 +506,7 @@ private:
     }
 
     void updateDrop(juce::Point<int> p) {
-        dropRow_ = std::max(0, p.y / theme::kTrackHeight);
+        dropRow_ = std::max(0, p.y / theme::trackHeight);
         if (dropRow_ < static_cast<int>(channels.size()) && !app_.engine.channel(channels[static_cast<size_t>(dropRow_)]).isAudio())
             dropRow_ = -1;                                   // MIDI tracks don't take audio
         dropTick_ = m_.snapDown(m_.xToTick(std::max(0, p.x)), m_.snapTicks(false));
@@ -653,7 +689,7 @@ public:
         g.fillRect(meter);
         const float lin = std::max(meterL_, meterR_);
         const float pos = lin <= 0.0003f ? 0.0f : juce::jlimit(0.0f, 1.0f, (fdm::gainToDb(lin) + 60.0f) / 66.0f);
-        g.setColour(lin > 1.0f ? theme::warn : (lin > 0.7f ? theme::accentHi : theme::play));
+        g.setColour(theme::meterColour(lin));
         g.fillRect(meter.withTop(meter.getBottom() - meter.getHeight() * pos));
     }
 
@@ -721,7 +757,8 @@ private:
 // ---------------------------------------------------------------------------
 // The whole arrangement: ruler, track headers, lanes, zoom
 // ---------------------------------------------------------------------------
-class ArrangementView : public juce::Component, private juce::Timer, private AppState::Listener, private juce::AsyncUpdater {
+class ArrangementView : public juce::Component, private juce::Timer, private AppState::Listener, private juce::AsyncUpdater,
+                        private juce::ChangeListener {
 public:
     explicit ArrangementView(AppState& app)
         : app_(app), ruler_(app, metrics_), lanes_(app, metrics_) {
@@ -750,13 +787,20 @@ public:
         lanes_.requestTab = [this](int t) { if (requestTab) requestTab(t); };
         lanes_.onExtentChanged = [this] { updateExtent(); };
         ruler_.onLoopChanged = [this] { lanes_.repaint(); };
+        lanes_.onZoom = [this](double f) { zoomBy(f); };
+        app_.prefs->addChangeListener(this);
+        applyPrefs();
 
         app_.addListener(this);
         rebuild();
         startTimerHz(30);
     }
 
-    ~ArrangementView() override { app_.removeListener(this); cancelPendingUpdate(); }
+    ~ArrangementView() override { app_.prefs->removeChangeListener(this); app_.removeListener(this); cancelPendingUpdate(); }
+
+    void zoomBy(double factor) { setZoom(metrics_.pxPerBar * factor); }
+    void duplicateSelected() { lanes_.duplicateSelectedClip(); }
+    void deleteSelected() { lanes_.deleteSelectedClip(); }
 
     std::function<void(int tab)> requestTab;
 
@@ -816,6 +860,19 @@ private:
         }
     };
 
+    void changeListenerCallback(juce::ChangeBroadcaster*) override { applyPrefs(); }
+
+    void applyPrefs() {
+        metrics_.snapMode = app_.prefs->getInt("timelineSnap");
+        static const int heights[] = {48, 66, 92};
+        const int h = heights[juce::jlimit(0, 2, app_.prefs->getInt("trackHeight"))];
+        if (h != theme::trackHeight) {
+            theme::trackHeight = h;
+            signature_.clear();                  // re-create the track headers at the new height
+            rebuild();
+        }
+    }
+
     void selectionChanged() override { lanes_.repaint(); }
     void structureChanged() override { triggerAsyncUpdate(); }
     void handleAsyncUpdate() override { rebuild(); }
@@ -829,12 +886,12 @@ private:
         const int64_t end = app_.engine.arrangementEndTick();
         metrics_.totalBars = std::max(64, static_cast<int>(end / fdm::kTicksPerBar) + 32);
         const int rows = static_cast<int>(lanes_.channels.size());
-        const int h = std::max(rows * theme::kTrackHeight + 120, viewport_.getMaximumVisibleHeight());
+        const int h = std::max(rows * theme::trackHeight + 120, viewport_.getMaximumVisibleHeight());
         const int w = std::max(metrics_.width(), viewport_.getMaximumVisibleWidth());
         lanes_.setSize(w, h);
         ruler_.setSize(w, theme::kRulerHeight);
         headerColumn_.setSize(theme::kTrackHeaderW, h);
-        addTrack_->setBounds(10, rows * theme::kTrackHeight + 10, theme::kTrackHeaderW - 20, 28);
+        addTrack_->setBounds(10, rows * theme::trackHeight + 10, theme::kTrackHeaderW - 20, 28);
         syncScroll(viewport_.getViewPositionX(), viewport_.getViewPositionY());
         lanes_.repaint();
         ruler_.repaint();
@@ -854,7 +911,7 @@ private:
             for (size_t row = 0; row < active.size(); ++row) {
                 headers_.push_back(std::make_unique<TrackHeader>(app_, active[row], [this](int t) { if (requestTab) requestTab(t); }));
                 headerColumn_.addAndMakeVisible(*headers_.back());
-                headers_.back()->setBounds(0, static_cast<int>(row) * theme::kTrackHeight, theme::kTrackHeaderW, theme::kTrackHeight);
+                headers_.back()->setBounds(0, static_cast<int>(row) * theme::trackHeight, theme::kTrackHeaderW, theme::trackHeight);
             }
         }
         addTrack_->setVisible(app_.engine.activeChannelCount() < fdm::kMaxChannels);
@@ -883,7 +940,7 @@ private:
         ruler_.repaint(oldX - 8, 0, 17, theme::kRulerHeight);
         ruler_.repaint(newX - 8, 0, 17, theme::kRulerHeight);
 
-        if (app_.engine.isPlaying()) {                              // keep the playhead on screen
+        if (app_.engine.isPlaying() && app_.prefs->getBool("followPlayhead")) {        // keep the playhead on screen
             const auto view = viewport_.getViewPosition();
             const int visible = viewport_.getMaximumVisibleWidth();
             if (newX < view.x || newX > view.x + visible - 30)

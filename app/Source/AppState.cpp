@@ -14,6 +14,7 @@ AppState::AppState() {
     properties.setStorageParameters(options);
 
     pluginHost = std::make_unique<PluginHost>(properties.getUserSettings());
+    prefs = std::make_unique<Prefs>(properties.getUserSettings());
     monoScratch_.assign(fdm::kMaxBlockSize, 0.0f);
     formats_.registerBasicFormats();
     previewBuffer_.setSize(2, fdm::kMaxBlockSize);
@@ -27,7 +28,8 @@ AppState::AppState() {
 
     // MIDI: listen to every input that is present, and play whichever channel is selected.
     for (auto& device : juce::MidiInput::getAvailableDevices()) {
-        deviceManager.setMidiInputDeviceEnabled(device.identifier, true);
+        const bool on = properties.getUserSettings()->getBoolValue("midiIn." + device.identifier, true);
+        deviceManager.setMidiInputDeviceEnabled(device.identifier, on);
         deviceManager.addMidiInputDeviceCallback(device.identifier, this);
     }
 
@@ -38,10 +40,14 @@ AppState::AppState() {
         engine.channel(audio).colorIndex.store(4);
     }
     selection_ = {Selection::Kind::Channel, 0, 0};
+    prefs->addChangeListener(this);
+    applyPrefs();
     armedChannel_.store(0);
 }
 
 AppState::~AppState() {
+    stopTimer();
+    prefs->removeChangeListener(this);
     saveSettings();
     for (auto& device : juce::MidiInput::getAvailableDevices())
         deviceManager.removeMidiInputDeviceCallback(device.identifier, this);
@@ -208,6 +214,7 @@ void AppState::showEffectEditor(fdm::Strip& strip, int slot) {
     editors[fx] = std::make_unique<PluginWindow>(*fx, [this, fx] {
         juce::MessageManager::callAsync([this, fx] { editors.erase(fx); });
     });
+    editors[fx]->setAlwaysOnTop(prefs->getBool("pluginWindowsOnTop"));
 }
 
 void AppState::closeEditorsFor(fdm::Strip& strip) {
@@ -270,6 +277,19 @@ void AppState::audioDeviceIOCallbackWithContext(const float* const*, int, float*
 
     if (numOutputs >= 2) {
         engine.process(output[0], output[1], numSamples);
+        if (int left = testToneFrames_.load(std::memory_order_relaxed); left > 0) {        // Preferences > Audio > Test tone
+            const double inc = juce::MathConstants<double>::twoPi * 440.0 / engine.sampleRate();
+            const int n = std::min(left, numSamples);
+            for (int i = 0; i < n; ++i) {
+                const float env = static_cast<float>(std::min(1.0, (left - i) / 2000.0));
+                const float v = 0.125f * env * static_cast<float>(std::sin(testTonePhase_));
+                testTonePhase_ += inc;
+                output[0][i] += v;
+                output[1][i] += v;
+            }
+            testTonePhase_ = std::fmod(testTonePhase_, juce::MathConstants<double>::twoPi);
+            testToneFrames_.store(left - n, std::memory_order_relaxed);
+        }
         if (previewTransport_.isPlaying() && numSamples <= previewBuffer_.getNumSamples()) {
             previewBuffer_.clear();
             juce::AudioSourceChannelInfo info(&previewBuffer_, 0, numSamples);
@@ -360,12 +380,14 @@ void AppState::addSampleFolder(const juce::File& folder) {
     auto folders = sampleFolders();
     folders.addIfNotAlreadyThere(folder.getFullPathName());
     if (auto* settings = properties.getUserSettings()) { settings->setValue("sampleFolders", folders.joinIntoString("|")); settings->saveIfNeeded(); }
+    prefs->changed();
 }
 
 void AppState::removeSampleFolder(const juce::String& path) {
     auto folders = sampleFolders();
     folders.removeString(path);
     if (auto* settings = properties.getUserSettings()) { settings->setValue("sampleFolders", folders.joinIntoString("|")); settings->saveIfNeeded(); }
+    prefs->changed();
 }
 
 void AppState::previewSample(const juce::File& file) {
@@ -377,6 +399,7 @@ void AppState::previewSample(const juce::File& file) {
     if (reader == nullptr) return;
     const double rate = reader->sampleRate;
     previewSource_ = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
+    previewSource_->setLooping(prefs->getBool("loopPreview"));
     previewTransport_.setSource(previewSource_.get(), 32768, &previewThread_, rate);
     previewTransport_.setPosition(0.0);
     previewTransport_.start();
@@ -457,6 +480,56 @@ void varToParams(const var& v, fdm::ParamList& list) {
 }  // namespace
 
 juce::Result AppState::saveProject(const juce::File& file) {
+    makeBackup(file);
+    auto result = writeProject(file);
+    if (result.wasOk()) {
+        projectFile_ = file;
+        prefs->set("lastProject", file.getFullPathName());
+    }
+    return result;
+}
+
+void AppState::makeBackup(const juce::File& file) {
+    const int keep = prefs->getInt("backups");
+    if (keep <= 0 || !file.existsAsFile()) return;
+    auto folder = file.getParentDirectory().getChildFile("Backups");
+    if (!folder.createDirectory()) return;
+    const auto stamp = juce::Time::getCurrentTime().formatted("%Y-%m-%d %H-%M-%S");
+    file.copyFileTo(folder.getChildFile(file.getFileNameWithoutExtension() + " " + stamp + ".fdm"));
+
+    auto old = folder.findChildFiles(juce::File::findFiles, false, file.getFileNameWithoutExtension() + " ????-??-?? ??-??-??.fdm");
+    struct ByTime { static int compareElements(const juce::File& a, const juce::File& b) {
+        return a.getLastModificationTime() < b.getLastModificationTime() ? 1 : (a.getLastModificationTime() > b.getLastModificationTime() ? -1 : 0); } } byTime;
+    old.sort(byTime);                                    // newest first
+    for (int i = keep; i < old.size(); ++i) old.getReference(i).deleteFile();
+}
+
+void AppState::timerCallback() {
+    // Autosave: next to the project as "<name>.autosave.fdm", or in the settings folder for untitled projects.
+    juce::File target = projectFile_ != juce::File()
+        ? projectFile_.getSiblingFile(projectFile_.getFileNameWithoutExtension() + ".autosave.fdm")
+        : properties.getUserSettings()->getFile().getSiblingFile("Untitled.autosave.fdm");
+    writeProject(target);
+}
+
+void AppState::setMidiInputEnabled(const juce::String& identifier, bool on) {
+    deviceManager.setMidiInputDeviceEnabled(identifier, on);
+    properties.getUserSettings()->setValue("midiIn." + identifier, on);
+    properties.getUserSettings()->saveIfNeeded();
+}
+
+void AppState::applyPrefs() {
+    engine.audioFadeMs.store(static_cast<float>(prefs->getDouble("audioFadeMs")));
+    previewTransport_.setGain(juce::Decibels::decibelsToGain(static_cast<float>(prefs->getDouble("previewGainDb"))));
+    if (previewSource_) previewSource_->setLooping(prefs->getBool("loopPreview"));
+    const int minutes = prefs->getInt("autosaveMinutes");
+    if (minutes != autosaveMinutes_) {
+        autosaveMinutes_ = minutes;
+        if (minutes > 0) startTimer(minutes * 60 * 1000); else stopTimer();
+    }
+}
+
+juce::Result AppState::writeProject(const juce::File& file) {
     auto stripToVar = [this](fdm::Strip& s) {
         auto obj = new DynamicObject();
         obj->setProperty("name", juce::String(s.name));
@@ -564,7 +637,6 @@ juce::Result AppState::saveProject(const juce::File& file) {
 
     const juce::String json = juce::JSON::toString(var(root), false);
     if (!file.replaceWithText(json)) return juce::Result::fail("Couldn't write " + file.getFullPathName());
-    projectFile_ = file;
     return juce::Result::ok();
 }
 
@@ -675,12 +747,50 @@ juce::Result AppState::loadProject(const juce::File& file) {
     }
 
     projectFile_ = file;
+    prefs->set("lastProject", file.getFullPathName());
     notifyStructureChanged();
     selection_ = {Selection::Kind::Channel, -1, 0};
     selectChannel(0, 0);
 
     if (problems.isEmpty()) return juce::Result::ok();
     return juce::Result::fail("The project loaded, but:\n" + problems.joinIntoString("\n"));
+}
+
+AppState::ExportOptions AppState::exportOptionsFromPrefs() const {
+    ExportOptions o;
+    const int depth = prefs->getInt("exportBitDepth");
+    o.format = depth == 0 ? fdm::WavFormat::Pcm16 : (depth == 2 ? fdm::WavFormat::Float32 : fdm::WavFormat::Pcm24);
+    static const double rates[] = {0.0, 44100.0, 48000.0, 88200.0, 96000.0};
+    o.sampleRate = rates[juce::jlimit(0, 4, prefs->getInt("exportSampleRate"))];
+    o.tailSeconds = static_cast<float>(prefs->getDouble("exportTail"));
+    o.normalize = prefs->getBool("exportNormalize");
+    o.normalizeDb = static_cast<float>(prefs->getDouble("exportNormalizeDb"));
+    o.dither = prefs->getBool("exportDither");
+    return o;
+}
+
+juce::Result AppState::exportTimeline(const juce::File& file, const ExportOptions& o) {
+    std::vector<float> left, right;
+    const double deviceRate = engine.sampleRate();
+    const double rate = o.sampleRate > 0.0 ? o.sampleRate : deviceRate;
+    {
+        ScopedAudioPause pause(*this);          // nothing else may touch the engine while we render
+        if (rate != deviceRate) engine.prepare(rate, blockSize_);
+        engine.renderOffline(fdm::Engine::kRenderArrangement, 0, o.tailSeconds, left, right);
+        if (rate != deviceRate) engine.prepare(deviceRate, blockSize_);
+    }
+    if (o.normalize) {
+        float peak = 0.0f;
+        for (size_t i = 0; i < left.size(); ++i) peak = std::max({peak, std::fabs(left[i]), std::fabs(right[i])});
+        if (peak > 1.0e-6f) {
+            const float g = juce::Decibels::decibelsToGain(o.normalizeDb) / peak;
+            for (auto& v : left) v *= g;
+            for (auto& v : right) v *= g;
+        }
+    }
+    if (!fdm::writeWav(file.getFullPathName().toStdString(), left, right, static_cast<int>(rate), o.format, o.dither))
+        return juce::Result::fail("Couldn't write " + file.getFullPathName());
+    return juce::Result::ok();
 }
 
 juce::Result AppState::exportWav(const juce::File& file, int scene, int bars, fdm::WavFormat format) {

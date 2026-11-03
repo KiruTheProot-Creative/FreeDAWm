@@ -192,6 +192,8 @@ private:
             const auto error = app_.loadEffect(strip_, slot_, effects[id - 1]);
             if (error.isNotEmpty())
                 juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Couldn't load plugin", error);
+            else
+                app_.effectLoadedFromUi(strip_, slot_);
         });
     }
 

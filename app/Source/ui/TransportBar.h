@@ -29,6 +29,14 @@ public:
         menuButton(fileButton_, "File", [this] { showFileMenu(); });
         menuButton(audioButton_, "Audio", [this] { showAudioSettings(); });
         menuButton(pluginsButton_, "Plugins", [this] { showPluginsMenu(); });
+        menuButton(prefsButton_, "Preferences", [this] { if (onShowPreferences) onShowPreferences(); });
+        fileButton_.setTooltip("New, open, save, export");
+        audioButton_.setTooltip("Audio device settings");
+        pluginsButton_.setTooltip("Scan for VST3 plugins");
+        prefsButton_.setTooltip("All settings");
+        play_.setTooltip("Play");
+        stop_.setTooltip("Stop and return to the start marker");
+        loop_.setTooltip("Loop the region marked above the ruler");
 
         bpm_.setSliderStyle(juce::Slider::LinearBarVertical);
         bpm_.setColour(juce::Slider::backgroundColourId, theme::background);
@@ -111,14 +119,91 @@ public:
         bpm_.setBounds(r.removeFromLeft(104));
         r.removeFromLeft(6);
         swing_.setBounds(r.removeFromLeft(104));
-        cpu_.setBounds(r.removeFromRight(74));
+        prefsButton_.setBounds(r.removeFromRight(110));
+        r.removeFromRight(10);
+        cpuBounds_ = r.removeFromRight(74);
+        cpu_.setBounds(cpuBounds_);
         project_.setBounds(r.removeFromRight(200));
     }
 
     /** Space bar etc. */
     void togglePlay() { if (app_.engine.isPlaying()) app_.engine.stop(); else app_.engine.play(); }
 
+    std::function<void()> onShowPreferences;
+
+    // ---- actions, also reachable through keyboard shortcuts -------------------------
+    void newProject() { app_.newProject(); }
+    void save() { if (app_.projectFile() == juce::File()) saveProjectAs(); else report(app_.saveProject(app_.projectFile())); }
+    void toggleLoop() { app_.engine.loopEnabled.store(!app_.engine.loopEnabled.load()); syncFromEngine(); app_.structureHasChanged(); }
+
+    void openProject() {
+        projectsFolder().createDirectory();
+        chooser_ = std::make_unique<juce::FileChooser>("Open project", projectsFolder(), "*.fdm");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
+            if (fc.getResult() != juce::File()) report(app_.loadProject(fc.getResult()));
+        });
+    }
+
+    void saveProjectAs() {
+        projectsFolder().createDirectory();
+        chooser_ = std::make_unique<juce::FileChooser>("Save project", projectsFolder().getChildFile(app_.projectName() + ".fdm"), "*.fdm");
+        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this](const juce::FileChooser& fc) {
+                                  if (fc.getResult() != juce::File()) report(app_.saveProject(fc.getResult().withFileExtension("fdm")));
+                              });
+    }
+
+    void exportAudio() {
+        auto options = app_.exportOptionsFromPrefs();
+        if (!app_.prefs->getBool("exportAsk")) { chooseExportFile(options); return; }
+
+        auto* w = new juce::AlertWindow("Export audio", "Renders the whole timeline, from bar 1 to the end of the last clip.", juce::MessageBoxIconType::NoIcon);
+        w->addComboBox("format", {"16-bit WAV", "24-bit WAV", "32-bit float WAV"}, "Format");
+        w->getComboBoxComponent("format")->setSelectedItemIndex(juce::jlimit(0, 2, app_.prefs->getInt("exportBitDepth")));
+        w->addComboBox("rate", {"Same as audio device", "44.1 kHz", "48 kHz", "88.2 kHz", "96 kHz"}, "Sample rate");
+        w->getComboBoxComponent("rate")->setSelectedItemIndex(juce::jlimit(0, 4, app_.prefs->getInt("exportSampleRate")));
+        w->addTextEditor("tail", juce::String(options.tailSeconds, 1), "Tail (seconds)");
+        w->addComboBox("normalize", {"Don't normalize", "Normalize to " + juce::String(options.normalizeDb, 1) + " dBFS"}, "Normalize");
+        w->getComboBoxComponent("normalize")->setSelectedItemIndex(options.normalize ? 1 : 0);
+        w->addButton("Export", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        w->enterModalState(true, juce::ModalCallbackFunction::create([this, w, options](int result) mutable {
+            std::unique_ptr<juce::AlertWindow> owner(w);
+            if (result != 1) return;
+            const int fmt = w->getComboBoxComponent("format")->getSelectedItemIndex();
+            options.format = fmt == 0 ? fdm::WavFormat::Pcm16 : (fmt == 1 ? fdm::WavFormat::Pcm24 : fdm::WavFormat::Float32);
+            static const double rates[] = {0.0, 44100.0, 48000.0, 88200.0, 96000.0};
+            options.sampleRate = rates[juce::jlimit(0, 4, w->getComboBoxComponent("rate")->getSelectedItemIndex())];
+            options.tailSeconds = juce::jlimit(0.0f, 60.0f, w->getTextEditorContents("tail").getFloatValue());
+            options.normalize = w->getComboBoxComponent("normalize")->getSelectedItemIndex() == 1;
+            chooseExportFile(options);
+        }), false);
+    }
+
 private:
+    void chooseExportFile(AppState::ExportOptions options) {
+        auto folder = app_.prefs->exportFolder();
+        folder.createDirectory();
+        chooser_ = std::make_unique<juce::FileChooser>("Export audio", folder.getChildFile(app_.projectName() + ".wav"), "*.wav");
+        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, options](const juce::FileChooser& fc) {
+                                  if (fc.getResult() == juce::File()) return;
+                                  const auto result = app_.exportTimeline(fc.getResult().withFileExtension("wav"), options);
+                                  if (result.failed()) report(result);
+                                  else juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Export finished", fc.getResult().getFileName() + " was written.");
+                              });
+    }
+
+    void paintOverChildren(juce::Graphics& g) override {
+        if (app_.prefs->getInt("cpuMeter") != 1) return;                 // bar style
+        auto bar = cpuBounds_.reduced(6, 20).toFloat();
+        g.setColour(theme::background);
+        g.fillRoundedRectangle(bar, 3.0f);
+        const float load = static_cast<float>(juce::jlimit(0.0, 1.0, app_.cpuUsage()));
+        g.setColour(load > 0.8f ? theme::warn : theme::accent);
+        g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * load), 3.0f);
+    }
+
     void structureChanged() override { syncFromEngine(); }
 
     void syncFromEngine() {
@@ -142,9 +227,14 @@ private:
         time_.setText(juce::String::formatted("%d:%02d.%03d", static_cast<int>(seconds) / 60, static_cast<int>(seconds) % 60,
                                               static_cast<int>((seconds - std::floor(seconds)) * 1000.0)),
                       juce::dontSendNotification);
+        const int meter = app_.prefs->getInt("cpuMeter");
+        cpu_.setVisible(meter == 0);
         cpu_.setText("CPU " + juce::String(juce::roundToInt(app_.cpuUsage() * 100.0)) + "%", juce::dontSendNotification);
+        if (meter == 1) repaint(cpuBounds_);
         if (project_.getText() != app_.projectName()) project_.setText(app_.projectName(), juce::dontSendNotification);
     }
+
+    juce::File projectsFolder() const { return app_.prefs->projectFolder(); }
 
     // ---- menus --------------------------------------------------------------
     void showFileMenu() {
@@ -159,7 +249,7 @@ private:
             switch (id) {
                 case 1: app_.newProject(); break;
                 case 2: openProject(); break;
-                case 3: if (app_.projectFile() == juce::File()) saveProjectAs(); else report(app_.saveProject(app_.projectFile())); break;
+                case 3: save(); break;
                 case 4: saveProjectAs(); break;
                 case 5: exportAudio(); break;
                 default: break;
@@ -167,50 +257,9 @@ private:
         });
     }
 
-    static juce::File projectsFolder() {
-        return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("FreeDAWm");
-    }
 
-    void openProject() {
-        projectsFolder().createDirectory();
-        chooser_ = std::make_unique<juce::FileChooser>("Open project", projectsFolder(), "*.fdm");
-        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
-            if (fc.getResult() != juce::File()) report(app_.loadProject(fc.getResult()));
-        });
-    }
 
-    void saveProjectAs() {
-        projectsFolder().createDirectory();
-        chooser_ = std::make_unique<juce::FileChooser>("Save project", projectsFolder().getChildFile(app_.projectName() + ".fdm"), "*.fdm");
-        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [this](const juce::FileChooser& fc) {
-                                  if (fc.getResult() != juce::File()) report(app_.saveProject(fc.getResult().withFileExtension("fdm")));
-                              });
-    }
 
-    void exportAudio() {
-        auto* w = new juce::AlertWindow("Export audio", "Renders the whole timeline, from bar 1 to the end of the last clip, plus a short tail.", juce::MessageBoxIconType::NoIcon);
-        w->addComboBox("format", {"16-bit WAV", "24-bit WAV", "32-bit float WAV"}, "Format");
-        w->getComboBoxComponent("format")->setSelectedItemIndex(1);
-        w->addButton("Export", 1, juce::KeyPress(juce::KeyPress::returnKey));
-        w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-        w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int result) {
-            std::unique_ptr<juce::AlertWindow> owner(w);
-            if (result != 1) return;
-            const int scene = fdm::Engine::kRenderArrangement;
-            const int fmt = w->getComboBoxComponent("format")->getSelectedItemIndex();
-            const int bars = 0;                   // the whole timeline
-            const auto format = fmt == 0 ? fdm::WavFormat::Pcm16 : (fmt == 1 ? fdm::WavFormat::Pcm24 : fdm::WavFormat::Float32);
-            chooser_ = std::make_unique<juce::FileChooser>("Export audio", projectsFolder().getChildFile(app_.projectName() + ".wav"), "*.wav");
-            chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-                                  [this, scene, bars, format](const juce::FileChooser& fc) {
-                                      if (fc.getResult() == juce::File()) return;
-                                      const auto result = app_.exportWav(fc.getResult().withFileExtension("wav"), scene, bars, format);
-                                      if (result.failed()) report(result);
-                                      else juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Export finished", fc.getResult().getFileName() + " was written.");
-                                  });
-        }), false);
-    }
 
     void showAudioSettings() {
         auto* selector = new juce::AudioDeviceSelectorComponent(app_.deviceManager, 0, 0, 2, 2, true, false, true, false);
@@ -253,7 +302,8 @@ private:
 
     AppState& app_;
     IconButton play_, stop_;
-    juce::TextButton fileButton_, audioButton_, pluginsButton_, loop_;
+    juce::TextButton fileButton_, audioButton_, pluginsButton_, prefsButton_, loop_;
+    juce::Rectangle<int> cpuBounds_;
     juce::Rectangle<int> readoutBounds_;
     juce::Slider bpm_, swing_;
     juce::Label position_, time_, cpu_, project_;

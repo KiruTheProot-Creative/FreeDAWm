@@ -7,9 +7,9 @@ namespace fdm {
 
 enum class WavFormat { Pcm16, Pcm24, Float32 };
 
-/** Writes a stereo WAV file. 16-bit output is dithered (TPDF). Returns false on I/O failure. */
+/** Writes a stereo WAV file. 16-bit output is dithered (TPDF) unless `dither` is false. Returns false on I/O failure. */
 bool writeWav(const std::string& path, const std::vector<float>& left, const std::vector<float>& right,
-              int sampleRate, WavFormat format = WavFormat::Pcm24);
+              int sampleRate, WavFormat format = WavFormat::Pcm24, bool dither = true);
 
 struct WavData {
     int sampleRate = 0;

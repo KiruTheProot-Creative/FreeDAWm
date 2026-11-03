@@ -308,10 +308,11 @@ public:
         addAndMakeVisible(snapBox_);
 
         velocity_.setRange(1, 127, 1);
-        velocity_.setValue(100, juce::dontSendNotification);
+        velocity_.setValue(app_.prefs->getInt("defaultVelocity"), juce::dontSendNotification);
         velocity_.setSliderStyle(juce::Slider::LinearHorizontal);
         velocity_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 34, 20);
         velocity_.onValueChange = [this] { grid_.setVelocity(static_cast<int>(velocity_.getValue())); };
+        grid_.setVelocity(static_cast<int>(velocity_.getValue()));
         addAndMakeVisible(velocity_);
 
         clearButton_.setButtonText("Clear notes");

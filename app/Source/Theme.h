@@ -4,22 +4,22 @@
 
 namespace theme {
 
-inline const juce::Colour background  { 0xff09090b };   // window / inset readouts
-inline const juce::Colour panel       { 0xff131316 };
-inline const juce::Colour panelRaised { 0xff202126 };   // button face
-inline const juce::Colour panelHover  { 0xff2d2e35 };
-inline const juce::Colour border      { 0xff32333a };
-inline const juce::Colour text        { 0xffe8e8ec };
-inline const juce::Colour textDim     { 0xff8e909b };
-inline const juce::Colour accent      { 0xffe02b2b };   // Emulon-style red
-inline const juce::Colour accentHi    { 0xffff4a4a };
-inline const juce::Colour accentDeep  { 0xff6d0f12 };
-inline const juce::Colour readout     { 0xffff3b3b };   // red digital text
-inline const juce::Colour play        { 0xff58d68d };
-inline const juce::Colour warn        { 0xffff5f5f };
-inline const juce::Colour gridBar     { 0xff3a3b44 };
-inline const juce::Colour gridBeat    { 0xff26272e };
-inline const juce::Colour gridStep    { 0xff1b1c21 };
+inline juce::Colour background  { 0xff09090b };   // window / inset readouts
+inline juce::Colour panel       { 0xff131316 };
+inline juce::Colour panelRaised { 0xff202126 };   // button face
+inline juce::Colour panelHover  { 0xff2d2e35 };
+inline juce::Colour border      { 0xff32333a };
+inline juce::Colour text        { 0xffe8e8ec };
+inline juce::Colour textDim     { 0xff8e909b };
+inline juce::Colour accent      { 0xffe02b2b };   // Emulon-style red
+inline juce::Colour accentHi    { 0xffff4a4a };
+inline juce::Colour accentDeep  { 0xff6d0f12 };
+inline juce::Colour readout     { 0xffff3b3b };   // red digital text
+inline juce::Colour play        { 0xff58d68d };
+inline juce::Colour warn        { 0xffff5f5f };
+inline juce::Colour gridBar     { 0xff3a3b44 };
+inline juce::Colour gridBeat    { 0xff26272e };
+inline juce::Colour gridStep    { 0xff1b1c21 };
 
 /** Eight channel colours; a channel's colourIndex picks one. */
 inline juce::Colour channelColour(int index) {
@@ -27,6 +27,38 @@ inline juce::Colour channelColour(int index) {
         juce::Colour(0xffe5483f), juce::Colour(0xff4b8fe8), juce::Colour(0xff9b6df0), juce::Colour(0xff3fbf8a),
         juce::Colour(0xffe8a93a), juce::Colour(0xffe0589f), juce::Colour(0xff39b5c0), juce::Colour(0xff9bc94a)};
     return colours[((index % 8) + 8) % 8];
+}
+
+inline bool peakHold = true;
+inline int  meterScheme = 0;
+
+/** Accent colours offered in Preferences > Appearance. */
+inline const juce::StringArray& accentNames() {
+    static const juce::StringArray names {"Red", "Orange", "Amber", "Green", "Cyan", "Blue", "Purple", "Pink"};
+    return names;
+}
+
+/** Applies accent and contrast. Called once at startup, before any component exists. */
+inline void apply(int accentIndex, int contrastLevel) {
+    static const juce::uint32 accents[] = {0xffe02b2b, 0xffe8642a, 0xffe0a82b, 0xff35b866, 0xff27b3c4, 0xff3d7ee8, 0xff8f5ae8, 0xffe0458f};
+    const auto a = juce::Colour(accents[juce::jlimit(0, 7, accentIndex)]);
+    accent = a;
+    accentHi = a.brighter(0.25f);
+    accentDeep = a.darker(1.4f).withMultipliedSaturation(0.9f);
+    readout = a.brighter(0.3f);
+    if (contrastLevel == 1) {
+        text = juce::Colour(0xffffffff);
+        textDim = juce::Colour(0xffb8bac4);
+        border = juce::Colour(0xff4a4c56);
+        gridBar = juce::Colour(0xff50525c);
+        gridBeat = juce::Colour(0xff33343c);
+    }
+}
+
+/** Meter colour for a linear level. */
+inline juce::Colour meterColour(float level) {
+    if (meterScheme == 1) return level > 1.0f ? juce::Colours::white : accent.withMultipliedBrightness(0.6f + 0.4f * std::min(1.0f, level));
+    return level > 1.0f ? warn : (level > 0.7f ? accentHi : play);
 }
 
 /** Small bold capitals with a little extra spacing: the label style used everywhere. */
@@ -39,7 +71,7 @@ constexpr int kTransportHeight = 58;
 constexpr int kExplorerWidth   = 270;
 constexpr int kTrackHeaderW    = 200;
 constexpr int kRulerHeight     = 30;
-constexpr int kTrackHeight     = 66;
+inline int trackHeight = 66;            // Preferences > Appearance > Track height
 constexpr int kChannelWidth    = 116;
 constexpr int kSceneWidth      = 62;
 constexpr int kReturnWidth     = 96;

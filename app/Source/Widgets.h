@@ -190,8 +190,14 @@ public:
             const float lin = ch == 0 ? dispL_ : dispR_;
             const float pos = lin <= 0.0001f ? 0.0f : static_cast<float>(posForDb(fdm::gainToDb(lin)));
             auto fill = bar.withTop(bar.getBottom() - bar.getHeight() * pos);
-            g.setColour(lin > 1.0f ? theme::warn : (lin > 0.7f ? theme::accent : theme::play));
+            g.setColour(theme::meterColour(lin));
             g.fillRoundedRectangle(fill, 2.0f);
+            const float held = ch == 0 ? holdL_ : holdR_;
+            if (theme::peakHold && held > 0.0001f) {                       // peak-hold line
+                const float hp = static_cast<float>(posForDb(fdm::gainToDb(held)));
+                g.setColour(theme::meterColour(held).brighter(0.3f));
+                g.fillRect(bar.getX(), bar.getBottom() - bar.getHeight() * hp - 1.0f, bar.getWidth(), 2.0f);
+            }
         }
 
         // 0 dB tick and groove
@@ -248,15 +254,24 @@ private:
     void timerCallback() override {
         const float l = strip_.takePeakL(), r = strip_.takePeakR();
         const float nl = juce::jmax(l, dispL_ * 0.84f), nr = juce::jmax(r, dispR_ * 0.84f);
-        const bool changed = std::abs(nl - dispL_) > 0.0005f || std::abs(nr - dispR_) > 0.0005f;
+        const bool changed = std::abs(nl - dispL_) > 0.0005f || std::abs(nr - dispR_) > 0.0005f || holdL_ > 0.0f || holdR_ > 0.0f;
         dispL_ = nl < 0.0003f ? 0.0f : nl;
         dispR_ = nr < 0.0003f ? 0.0f : nr;
+        const auto now = juce::Time::getMillisecondCounter();
+        for (int c = 0; c < 2; ++c) {                                       // hold peaks for 1.5 s
+            float& hold = c == 0 ? holdL_ : holdR_;
+            auto& since = c == 0 ? holdSinceL_ : holdSinceR_;
+            const float v = c == 0 ? dispL_ : dispR_;
+            if (v >= hold) { hold = v; since = now; }
+            else if (now - since > 1500) { hold = v; since = now; }
+        }
         if (changed) repaint();
     }
 
     fdm::Strip& strip_;
     juce::NormalisableRange<double> range_ { -70.0, 6.0 };
-    float dispL_ = 0.0f, dispR_ = 0.0f;
+    float dispL_ = 0.0f, dispR_ = 0.0f, holdL_ = 0.0f, holdR_ = 0.0f;
+    juce::uint32 holdSinceL_ = 0, holdSinceR_ = 0;
 };
 
 inline juce::String dbText(float db) {

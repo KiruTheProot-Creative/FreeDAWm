@@ -21,6 +21,10 @@ A free, channel-based DAW in C++ with an Ableton-style session workflow. Beat-ma
 - **Instruments**: a temporary Drum Rack and Poly Synth so MIDI tracks make sound for now. They will be replaced by hosted instrument plugins.
 - **Plugins**: VST3 hosting only. No effects or instruments are built in. VST2 is not supported.
 - **Projects** (`.fdm`; sound files are referenced by path) and **WAV export** of the whole timeline (16/24/32-bit).
+- **Preferences** (toolbar button or Ctrl+,): ten tabs.
+  - General, Audio, MIDI, Plugins, Library, Recording, Export, Editing, Appearance, Shortcuts.
+  - Every setting that has a feature behind it works now: startup project, autosave and backups, audio device and test tone, MIDI inputs, plugin folders and scanning, sample folders and preview, export format, sample rate, tail, normalize and dither, timeline snap and wheel zoom, clip defaults, accent colour, UI scale, track height, meters, tooltips, and remappable shortcuts.
+  - Settings for features that don't exist yet (recording, undo, MIDI clock, time-stretching and so on) are shown but marked *Coming soon*.
 - The computer keyboard plays the selected MIDI track (A-K row, Z/X octave). Space plays and stops.
 
 Known limits:

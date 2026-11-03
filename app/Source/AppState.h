@@ -4,11 +4,14 @@
 
 #include "Common.h"
 #include "PluginHost.h"
+#include "Prefs.h"
 
 /** Everything the UI needs: the engine, audio/MIDI I/O, plugin hosting, the
     current selection, and project files. UI-thread only unless noted. */
 class AppState : private juce::AudioIODeviceCallback,
-                 private juce::MidiInputCallback {
+                 private juce::MidiInputCallback,
+                 private juce::ChangeListener,
+                 private juce::Timer {
 public:
     AppState();
     ~AppState() override;
@@ -62,6 +65,18 @@ public:
     juce::Result saveProject(const juce::File& file);
     juce::Result loadProject(const juce::File& file);
     juce::Result exportWav(const juce::File& file, int scene, int bars, fdm::WavFormat format);
+
+    /** Export using the options from Preferences > Export (or the export dialog). */
+    struct ExportOptions {
+        fdm::WavFormat format = fdm::WavFormat::Pcm24;
+        double sampleRate = 0.0;          // 0 = the audio device's rate
+        float  tailSeconds = 2.0f;
+        bool   normalize = false;
+        float  normalizeDb = -0.3f;
+        bool   dither = true;
+    };
+    ExportOptions exportOptionsFromPrefs() const;
+    juce::Result exportTimeline(const juce::File& file, const ExportOptions& options);
     juce::String projectName() const;
     const juce::File& projectFile() const { return projectFile_; }
 
@@ -81,6 +96,13 @@ public:
     void stopSamplePreview();
     bool isPreviewingSample() const { return previewTransport_.isPlaying(); }
 
+    // ---- audio helpers for Preferences ---------------------------------------------------
+    void playTestTone() { testToneFrames_.store(static_cast<int>(engine.sampleRate())); }
+    void setMidiInputEnabled(const juce::String& identifier, bool on);
+    bool isMidiInputEnabled(const juce::String& identifier) const { return deviceManager.isMidiInputDeviceEnabled(identifier); }
+    /** Opens the plugin's editor after it was loaded from the UI, when the preference asks for it. */
+    void effectLoadedFromUi(fdm::Strip& strip, int slot) { if (prefs->getBool("openEditorOnLoad")) showEffectEditor(strip, slot); }
+
     // ---- audio --------------------------------------------------------------
     double cpuUsage() const { return deviceManager.getCpuUsage(); }
     juce::String audioStatus() const { return audioError_; }
@@ -88,6 +110,7 @@ public:
     // ---- members ------------------------------------------------------------
     fdm::Engine                 engine;
     juce::ApplicationProperties properties;
+    std::unique_ptr<Prefs>      prefs;
     std::unique_ptr<PluginHost> pluginHost;
     juce::AudioDeviceManager    deviceManager;
 
@@ -113,6 +136,11 @@ private:
     void closeEditorsFor(fdm::Strip& strip);
     void resetMixerAndTransport();
     void notifyStructureChanged();
+    juce::Result writeProject(const juce::File& file);
+    void makeBackup(const juce::File& file);
+    void applyPrefs();
+    void changeListenerCallback(juce::ChangeBroadcaster*) override { applyPrefs(); }
+    void timerCallback() override;          // autosave
 
     // juce::AudioIODeviceCallback
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
@@ -132,6 +160,9 @@ private:
     bool audioAttached_ = false;
     int  blockSize_ = 512;
     std::vector<float> monoScratch_;
+    std::atomic<int> testToneFrames_{0};
+    double testTonePhase_ = 0.0;
+    int autosaveMinutes_ = -1;
 
     juce::AudioFormatManager     formats_;
     juce::TimeSliceThread        previewThread_{"Sample preview"};

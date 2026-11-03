@@ -117,6 +117,8 @@ private:
         const auto error = app_.loadEffect(*strip, slot, rows_[static_cast<size_t>(row)].desc);
         if (error.isNotEmpty())
             juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Couldn't load plugin", error);
+        else
+            app_.effectLoadedFromUi(*strip, slot);
     }
 
     void refresh() {
@@ -159,7 +161,7 @@ private:
 };
 
 /** Sample browser: pick a root folder, browse the tree, click a file to audition it. */
-class SampleExplorer : public juce::Component, private juce::FileBrowserListener, private juce::Timer {
+class SampleExplorer : public juce::Component, private juce::FileBrowserListener, private juce::Timer, private juce::ChangeListener {
 public:
     explicit SampleExplorer(AppState& app)
         : app_(app), thread_("Sample scan"),
@@ -202,9 +204,10 @@ public:
 
         reloadRoots({});
         startTimerHz(4);
+        app_.prefs->addChangeListener(this);
     }
 
-    ~SampleExplorer() override { app_.stopSamplePreview(); tree_.removeListener(this); thread_.stopThread(1000); }
+    ~SampleExplorer() override { app_.prefs->removeChangeListener(this); app_.stopSamplePreview(); tree_.removeListener(this); thread_.stopThread(1000); }
 
     void setFilter(const juce::String& f) {
         filterText_ = f.trim();
@@ -247,7 +250,14 @@ private:
         contents_.setDirectory(juce::File(roots_[id - 1]), true, true);
     }
 
+    void changeListenerCallback(juce::ChangeBroadcaster*) override {      // folders edited in Preferences
+        if (app_.sampleFolders() == roots_) return;
+        const int id = root_.getSelectedId();
+        reloadRoots(id > 0 && id <= roots_.size() ? roots_[id - 1] : juce::String());
+    }
+
     void selectionChanged() override {
+        if (!app_.prefs->getBool("autoPreview")) return;
         const auto f = tree_.getSelectedFile();
         if (f.existsAsFile()) { app_.previewSample(f); status_.setText("PLAYING  " + f.getFileName().toUpperCase(), juce::dontSendNotification); }
     }
