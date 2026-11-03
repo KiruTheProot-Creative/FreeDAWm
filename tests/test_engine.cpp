@@ -529,7 +529,7 @@ TEST(arrangement_offline_render_matches_timeline_and_leaves_state_alone) {
     fdm::buildDemoProject(e);
     e.bpm.set(120.0f);
     for (int i = 0; i < kMaxChannels; ++i)
-        if (e.channel(i).active.load()) e.channel(i).addPlacement({kTicksPerBar, 2 * kTicksPerBar, 0});
+        if (e.channel(i).active.load()) { e.channel(i).clearPlacements(); e.channel(i).addPlacement({kTicksPerBar, 2 * kTicksPerBar, 0}); }
     CHECK(e.arrangementEndTick() == 3 * kTicksPerBar);
     std::vector<float> L, R;
     e.renderOffline(Engine::kRenderArrangement, 0, 0.0f, L, R);
