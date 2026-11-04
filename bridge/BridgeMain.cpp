@@ -29,6 +29,7 @@
   #define NOMINMAX
  #endif
  #include <windows.h>
+ #include <ole2.h>
 #else
  #include <dlfcn.h>
  #include <signal.h>
